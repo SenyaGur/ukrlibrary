@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Environment files
+*.local
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+
+# SQLite database
+*.db
+
+# Uploads
+backend/uploads/book-covers/*
+backend/uploads/book-media/*
+!backend/uploads/book-covers/.gitkeep
+!backend/uploads/book-media/.gitkeep
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor directories
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Data files (Excel spreadsheets at root)
+*.xlsx
+
+# Claude
+.claude/
+CLAUDE.md
+frontend/CLAUDE.md

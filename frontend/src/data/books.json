@@ -1,0 +1,98 @@
+[
+  {
+    "id": 1,
+    "title": "Чарівний будиночок на дереві",
+    "author": "Мері Поуп Осборн",
+    "coverColor": "#4A90E2",
+    "available": true,
+    "category": "Пригоди"
+  },
+  {
+    "id": 2,
+    "title": "Гаррі Поттер і філософський камінь",
+    "author": "Дж.К. Ролінґ",
+    "coverColor": "#9B59B6",
+    "available": false,
+    "category": "Фентезі"
+  },
+  {
+    "id": 3,
+    "title": "Диво",
+    "author": "Р.Дж. Паласіо",
+    "coverColor": "#E74C3C",
+    "available": true,
+    "category": "Життєві історії"
+  },
+  {
+    "id": 4,
+    "title": "Щоденник слабака",
+    "author": "Джефф Кінні",
+    "coverColor": "#F39C12",
+    "available": true,
+    "category": "Гумор"
+  },
+  {
+    "id": 5,
+    "title": "Павутинка Шарлотти",
+    "author": "Е.Б. Вайт",
+    "coverColor": "#27AE60",
+    "available": true,
+    "category": "Класика"
+  },
+  {
+    "id": 6,
+    "title": "Кіт у капелюсі",
+    "author": "Доктор Сюсс",
+    "coverColor": "#E67E22",
+    "available": false,
+    "category": "Малюкам"
+  },
+  {
+    "id": 7,
+    "title": "Матильда",
+    "author": "Роальд Дал",
+    "coverColor": "#3498DB",
+    "available": true,
+    "category": "Пригоди"
+  },
+  {
+    "id": 8,
+    "title": "Персі Джексон і Викрадач блискавок",
+    "author": "Рік Ріордан",
+    "coverColor": "#1ABC9C",
+    "available": true,
+    "category": "Фентезі"
+  },
+  {
+    "id": 9,
+    "title": "Таємний сад",
+    "author": "Френсіс Годжсон Бернетт",
+    "coverColor": "#2ECC71",
+    "available": true,
+    "category": "Класика"
+  },
+  {
+    "id": 10,
+    "title": "Аліса в Країні Чудес",
+    "author": "Льюїс Керрол",
+    "coverColor": "#E91E63",
+    "available": true,
+    "category": "Фентезі"
+  },
+  {
+    "id": 11,
+    "title": "Маленький принц",
+    "author": "Антуан де Сент-Екзюпері",
+    "coverColor": "#FF9800",
+    "available": false,
+    "category": "Філософія"
+  },
+  {
+    "id": 12,
+    "title": "Пригоди Тома Сойєра",
+    "author": "Марк Твен",
+    "coverColor": "#795548",
+    "available": true,
+    "category": "Пригоди"
+  }
+]
