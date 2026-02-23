@@ -9,8 +9,9 @@ children_bp = Blueprint('children', __name__, url_prefix='/api/children')
 
 
 @readers_bp.route('', methods=['GET'])
+@admin_required
 def get_readers():
-    """Get all readers with their children. No auth required."""
+    """Get all readers with their children. Admin only."""
     readers = query_db('SELECT * FROM readers ORDER BY parent_surname, parent_name')
 
     for reader in readers:
@@ -24,8 +25,9 @@ def get_readers():
 
 
 @readers_bp.route('/<reader_id>', methods=['GET'])
+@admin_required
 def get_reader(reader_id):
-    """Get a single reader by ID with children. No auth required."""
+    """Get a single reader by ID with children. Admin only."""
     reader = query_db('SELECT * FROM readers WHERE id = ?', [reader_id], one=True)
     if not reader:
         return jsonify({'error': 'Reader not found'}), 404
@@ -76,8 +78,9 @@ def create_reader():
 
 
 @readers_bp.route('/<reader_id>/children', methods=['GET'])
+@admin_required
 def get_reader_children(reader_id):
-    """Get children for a specific reader. No auth required."""
+    """Get children for a specific reader. Admin only."""
     reader = query_db('SELECT id FROM readers WHERE id = ?', [reader_id], one=True)
     if not reader:
         return jsonify({'error': 'Reader not found'}), 404

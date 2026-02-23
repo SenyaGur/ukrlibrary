@@ -43,8 +43,9 @@ def _remove_from_queue(db, book_id, position):
 
 
 @rentals_bp.route('', methods=['GET'])
+@admin_required
 def get_rentals():
-    """Get all rental requests. Supports ?reader_id=xxx filter. No auth required."""
+    """Get all rental requests. Supports ?reader_id=xxx filter. Admin only."""
     reader_id = request.args.get('reader_id')
     status = request.args.get('status')
 
@@ -242,8 +243,9 @@ def update_rental_status(rental_id):
 
 
 @rentals_bp.route('/queue/<book_id>', methods=['GET'])
+@admin_required
 def get_queue(book_id):
-    """Get queue entries for a book."""
+    """Get queue entries for a book. Admin only."""
     entries = query_db(
         '''SELECT id, renter_name, queue_position, requested_at
            FROM rental_requests
