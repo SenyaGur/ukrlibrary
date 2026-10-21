@@ -8,6 +8,39 @@ readers_bp = Blueprint('readers', __name__, url_prefix='/api/readers')
 children_bp = Blueprint('children', __name__, url_prefix='/api/children')
 
 
+@readers_bp.route('/<reader_id>/report/send', methods=['POST'])
+@admin_required
+def send_reader_report(reader_id):
+    """Email a reader their report: books on hand + full reading history.
+
+    Body (optional): { email } — overrides the reader's stored email.
+    """
+    from app.mailer import send_email, is_configured
+    from app.email_templates import reader_report_html
+
+    reader = query_db('SELECT * FROM readers WHERE id = ?', [reader_id], one=True)
+    if not reader:
+        return jsonify({'error': 'Reader not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    email = ((data.get('email') or reader['email']) or '').strip()
+    if not email:
+        return jsonify({'error': 'У читача не вказано email'}), 400
+    if not is_configured():
+        return jsonify({'error': 'Надсилання email не налаштовано на сервері'}), 503
+
+    rentals = query_db(
+        'SELECT * FROM rental_requests WHERE reader_id = ? ORDER BY requested_at DESC',
+        [reader_id]
+    )
+    reader_name = f"{reader['parent_surname']} {reader['parent_name']}".strip()
+    html = reader_report_html(reader_name, rentals)
+    ok = send_email(email, f'Довідка читача — {reader_name}', html)
+    if not ok:
+        return jsonify({'error': 'Не вдалося надіслати email'}), 502
+    return jsonify({'sent': True, 'email': email})
+
+
 @readers_bp.route('', methods=['GET'])
 @admin_required
 def get_readers():
@@ -20,6 +53,29 @@ def get_readers():
             [reader['id']]
         )
         reader['children'] = children
+
+        parent_name = (reader['parent_name'] or '').strip()
+        parent_surname = (reader['parent_surname'] or '').strip()
+
+        if len(parent_name) > 1 and len(parent_surname) > 1:
+            active_rentals = query_db("""
+                SELECT book_title FROM rental_requests
+                WHERE status = 'approved'
+                AND (
+                    reader_id = ?
+                    OR (
+                        (reader_id IS NULL OR reader_id NOT IN (SELECT id FROM readers))
+                        AND TRIM(renter_name) LIKE ?
+                        AND TRIM(renter_name) LIKE ?
+                    )
+                )
+            """, [reader['id'], f'%{parent_name}%', f'%{parent_surname}%'])
+        else:
+            active_rentals = query_db(
+                "SELECT book_title FROM rental_requests WHERE reader_id = ? AND status = 'approved'",
+                [reader['id']]
+            )
+        reader['active_rentals'] = [r['book_title'] for r in active_rentals]
 
     return jsonify(readers)
 

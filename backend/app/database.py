@@ -35,6 +35,21 @@ def init_db():
     except Exception:
         pass  # Column already exists
 
+    # Idempotently add columns that were introduced after a DB may have been
+    # created (schema.sql uses CREATE TABLE IF NOT EXISTS, which never alters an
+    # existing table). Each ALTER is a no-op once the column is present.
+    _column_migrations = [
+        ('readers', 'email', "ALTER TABLE readers ADD COLUMN email TEXT DEFAULT ''"),
+    ]
+    for table, column, ddl in _column_migrations:
+        existing = {row[1] for row in db.execute(f'PRAGMA table_info({table})').fetchall()}
+        if column not in existing:
+            try:
+                db.execute(ddl)
+                db.commit()
+            except Exception:
+                pass
+
     # Create upload directories
     upload_folder = current_app.config['UPLOAD_FOLDER']
     os.makedirs(os.path.join(upload_folder, 'book-covers'), exist_ok=True)

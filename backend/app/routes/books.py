@@ -37,12 +37,40 @@ def _enrich_book(book):
     else:
         enriched['series'] = None
 
+    # Count rentals for popularity
+    rental_count = query_db(
+        'SELECT COUNT(*) as cnt FROM rental_requests WHERE book_id = ?',
+        [enriched['id']], one=True
+    )
+    enriched['rental_count'] = rental_count['cnt'] if rental_count else 0
+
+    # When a copy is out, attach who currently holds it and when it's due, so
+    # the admin book list can show "на руках у X до DATE".
+    if not enriched['available']:
+        active = query_db(
+            '''SELECT renter_name, approved_at, rental_duration, reader_id
+               FROM rental_requests
+               WHERE book_id = ? AND status = 'approved'
+               ORDER BY approved_at DESC LIMIT 1''',
+            [enriched['id']], one=True
+        )
+        enriched['current_rental'] = active
+    else:
+        enriched['current_rental'] = None
+
     return enriched
 
 
 @books_bp.route('', methods=['GET'])
 def get_books():
     """Get all books with optional filtering, joined publisher and series data."""
+    # Auto-clear new_book flag for books older than 2 months
+    db = get_db()
+    db.execute(
+        "UPDATE books SET new_book = 0 WHERE new_book = 1 AND created_at < datetime('now', '-2 months')"
+    )
+    db.commit()
+
     category = request.args.get('category')
     search = request.args.get('search')
     available = request.args.get('available')
@@ -63,7 +91,11 @@ def get_books():
         query += ' AND available = ?'
         args.append(int(available))
 
-    query += ' ORDER BY title ASC'
+    sort = request.args.get('sort')
+    if sort == 'popularity':
+        query += ' ORDER BY (SELECT COUNT(*) FROM rental_requests WHERE rental_requests.book_id = books.id) DESC, title ASC'
+    else:
+        query += ' ORDER BY new_book DESC, title ASC'
 
     books = query_db(query, args)
     return jsonify([_enrich_book(b) for b in books])
@@ -87,12 +119,16 @@ def get_filters():
     series_list = [r['name'] for r in query_db(
         'SELECT DISTINCT name FROM series ORDER BY name'
     )]
+    suppliers = [r['supplier'] for r in query_db(
+        'SELECT DISTINCT supplier FROM books WHERE supplier IS NOT NULL AND supplier != "" ORDER BY supplier'
+    )]
 
     return jsonify({
         'categories': categories,
         'authors': authors,
         'ages': ages,
         'publishers': publishers,
+        'suppliers': suppliers,
         'series': series_list,
     })
 
@@ -109,6 +145,15 @@ def create_book():
     for field in required:
         if not data.get(field):
             return jsonify({'error': f'{field} is required'}), 400
+
+    inv_number = data.get('inventory_number')
+    if inv_number is not None:
+        existing = query_db(
+            'SELECT id FROM books WHERE inventory_number = ?',
+            [inv_number], one=True
+        )
+        if existing:
+            return jsonify({'error': 'Інвентарний номер вже існує'}), 400
 
     book_id = str(uuid.uuid4())
     db = get_db()
@@ -154,6 +199,15 @@ def update_book(book_id):
     data = request.get_json()
     if not data:
         return jsonify({'error': 'Request body is required'}), 400
+
+    inv_number = data.get('inventory_number')
+    if inv_number is not None:
+        existing = query_db(
+            'SELECT id FROM books WHERE inventory_number = ? AND id != ?',
+            [inv_number, book_id], one=True
+        )
+        if existing:
+            return jsonify({'error': 'Інвентарний номер вже існує'}), 400
 
     fields = [
         'title', 'author', 'category', 'category_id', 'series_id', 'publisher_id',
@@ -212,10 +266,23 @@ def delete_book(book_id):
 @books_bp.route('/<book_id>/duplicate', methods=['POST'])
 @admin_required
 def duplicate_book(book_id):
-    """Create a new copy of a book with the same metadata (admin only)."""
+    """Create a new copy of a book with the same metadata (admin only).
+    Accepts optional JSON body with inventory_number to override."""
     book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
     if not book:
         return jsonify({'error': 'Book not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    inv_number = data.get('inventory_number', book['inventory_number'])
+    supplier = data.get('supplier', book['supplier'])
+
+    if inv_number is not None:
+        existing = query_db(
+            'SELECT id FROM books WHERE inventory_number = ?',
+            [inv_number], one=True
+        )
+        if existing:
+            return jsonify({'error': 'Інвентарний номер вже існує'}), 400
 
     new_id = str(uuid.uuid4())
     db = get_db()
@@ -239,8 +306,8 @@ def duplicate_book(book_id):
             book['age'],
             book['publication_year'],
             book['isbn'],
-            book['inventory_number'],
-            book['supplier'],
+            inv_number,
+            supplier,
             book['new_book'],
         ]
     )
@@ -312,6 +379,42 @@ def add_book_media(book_id):
 
     media = query_db('SELECT * FROM book_media WHERE id = ?', [media_id], one=True)
     return jsonify(media), 201
+
+
+@books_bp.route('/<book_id>/media/reorder', methods=['PUT'])
+@admin_required
+def reorder_book_media(book_id):
+    """Reorder media for a book (admin only). Accepts { order: [media_id, ...] }."""
+    book = query_db('SELECT id FROM books WHERE id = ?', [book_id], one=True)
+    if not book:
+        return jsonify({'error': 'Book not found'}), 404
+
+    data = request.get_json()
+    if not data or 'order' not in data:
+        return jsonify({'error': 'order is required'}), 400
+
+    db = get_db()
+    for idx, media_id in enumerate(data['order']):
+        db.execute(
+            'UPDATE book_media SET display_order = ? WHERE id = ? AND book_id = ?',
+            [idx, media_id, book_id]
+        )
+    db.commit()
+
+    media = query_db(
+        'SELECT * FROM book_media WHERE book_id = ? ORDER BY display_order',
+        [book_id]
+    )
+    return jsonify(media)
+
+
+@books_bp.route('/<book_id>/export', methods=['GET'])
+def export_book_data(book_id):
+    """Export a single book's data (public)."""
+    book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
+    if not book:
+        return jsonify({'error': 'Book not found'}), 404
+    return jsonify(_enrich_book(book))
 
 
 @books_bp.route('/media/<media_id>', methods=['DELETE'])

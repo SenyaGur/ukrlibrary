@@ -97,3 +97,36 @@ CREATE TABLE IF NOT EXISTS book_media (
     display_order INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Audit trail: every mutating (POST/PUT/PATCH/DELETE) request is recorded so
+-- admins can see who did what. `action` is the Flask endpoint (e.g.
+-- "books.update_book"), `entity_type` the blueprint, `entity_id` the URL id,
+-- `details` a JSON blob of safe URL/body fields (never passwords).
+CREATE TABLE IF NOT EXISTS audit_log (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    user_email TEXT,
+    user_name TEXT,
+    action TEXT NOT NULL,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    entity_type TEXT,
+    entity_id TEXT,
+    details TEXT,
+    status_code INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
+
+-- Tracks overdue reminder emails so we don't spam the same reader daily.
+CREATE TABLE IF NOT EXISTS overdue_reminders (
+    id TEXT PRIMARY KEY,
+    rental_id TEXT NOT NULL,
+    email TEXT,
+    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_overdue_rental ON overdue_reminders(rental_id);
