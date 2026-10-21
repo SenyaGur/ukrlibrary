@@ -1,10 +1,14 @@
-import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle, XCircle, Mail, Calendar, User, Phone, BookOpen, RotateCcw } from "lucide-react";
+import { TableRow, TableCell } from "@/components/ui/table";
+import { CheckCircle, XCircle, RotateCcw, Mail, User } from "lucide-react";
+import type { Book } from "@/lib/api-types";
+import { formatDueDate, isOverdue } from "@/lib/rentals";
+import { cn } from "@/lib/utils";
 
 interface RentalRequest {
   id: string;
+  book_id: string;
   book_title: string;
   renter_name: string;
   renter_phone: string;
@@ -12,111 +16,126 @@ interface RentalRequest {
   rental_duration: number;
   status: string;
   queue_position?: number | null;
+  reader_id?: string | null;
   requested_at: string;
+  approved_at?: string | null;
 }
 
 interface RentalRequestCardProps {
   request: RentalRequest;
+  bookMap: Map<string, Book>;
   onApprove?: () => void;
   onDecline?: () => void;
   onReturn?: () => void;
   onSendReminder?: () => void;
+  onReaderClick?: (readerId: string) => void;
+  onBookClick?: (bookTitle: string) => void;
+  onReassign?: () => void;
 }
 
-const RentalRequestCard = ({ request, onApprove, onDecline, onReturn, onSendReminder }: RentalRequestCardProps) => {
+const RentalRequestCard = ({ request, bookMap, onApprove, onDecline, onReturn, onSendReminder, onReaderClick, onBookClick, onReassign }: RentalRequestCardProps) => {
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("uk-UA", {
       day: "numeric",
-      month: "long",
+      month: "short",
       year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
     });
   };
+
+  const book = bookMap.get(request.book_id);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "pending":
-        return <Badge>Очікує</Badge>;
+        return <Badge className="text-xs">Очікує</Badge>;
       case "approved":
-        return <Badge variant="default" className="bg-green-500">Схвалено</Badge>;
+        return <Badge variant="default" className="bg-green-500 text-xs">Схвалено</Badge>;
       case "declined":
-        return <Badge variant="destructive">Відхилено</Badge>;
+        return <Badge variant="destructive" className="text-xs">Відхилено</Badge>;
       case "returned":
-        return <Badge variant="secondary">Повернено</Badge>;
+        return <Badge variant="secondary" className="text-xs">Повернено</Badge>;
       case "queued":
-        return <Badge variant="outline">В черзі #{request.queue_position}</Badge>;
+        return <Badge variant="outline" className="text-xs">В черзі #{request.queue_position}</Badge>;
       default:
-        return <Badge variant="secondary">{status}</Badge>;
+        return <Badge variant="secondary" className="text-xs">{status}</Badge>;
     }
   };
 
   return (
-    <Card className="p-4">
-      <div className="space-y-3">
-        <div className="flex items-start justify-between">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-muted-foreground" />
-              <h4 className="font-semibold">{request.book_title}</h4>
-            </div>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Calendar className="w-3 h-3" />
-              <span>{formatDate(request.requested_at)}</span>
-            </div>
-          </div>
-          {getStatusBadge(request.status)}
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-          <div className="flex items-center gap-2">
-            <User className="w-4 h-4 text-muted-foreground" />
-            <span>{request.renter_name}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Phone className="w-4 h-4 text-muted-foreground" />
-            <span>{request.renter_phone}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Mail className="w-4 h-4 text-muted-foreground" />
-            <span className="truncate">{request.renter_email}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-muted-foreground" />
-            <span>Термін: {request.rental_duration} {request.rental_duration === 1 ? "тиждень" : "тижні"}</span>
-          </div>
-        </div>
-
-        {(onApprove || onDecline || onReturn || onSendReminder) && (
-          <div className="flex gap-2 pt-2">
-            {onApprove && (
-              <Button size="sm" onClick={onApprove} className="gap-2">
-                <CheckCircle className="w-4 h-4" />
-                Схвалити
-              </Button>
+    <TableRow>
+      <TableCell className="whitespace-nowrap text-sm">
+        {formatDate(request.approved_at || request.requested_at)}
+        {request.status === "approved" && request.approved_at && (
+          <div
+            className={cn(
+              "text-xs",
+              isOverdue(request.approved_at, request.rental_duration, null)
+                ? "text-red-600 font-semibold"
+                : "text-muted-foreground",
             )}
-            {onReturn && (
-              <Button size="sm" variant="outline" onClick={onReturn} className="gap-2">
-                <RotateCcw className="w-4 h-4" />
-                Повернути
-              </Button>
-            )}
-            {onDecline && (
-              <Button size="sm" variant="outline" onClick={onDecline} className="gap-2">
-                <XCircle className="w-4 h-4" />
-                Відхилити
-              </Button>
-            )}
-            {onSendReminder && (
-              <Button size="sm" variant="secondary" onClick={onSendReminder} className="gap-2">
-                <Mail className="w-4 h-4" />
-                Нагадування
-              </Button>
-            )}
+          >
+            Повернути до {formatDueDate(request.approved_at, request.rental_duration)}
+            {isOverdue(request.approved_at, request.rental_duration, null) ? " · прострочено" : ""}
           </div>
         )}
-      </div>
-    </Card>
+      </TableCell>
+      <TableCell className="text-sm font-medium">
+        {onBookClick ? (
+          <button
+            className="text-primary hover:underline text-left"
+            onClick={() => onBookClick(request.book_title)}
+          >
+            {request.book_title}
+          </button>
+        ) : (
+          request.book_title
+        )}
+      </TableCell>
+      <TableCell className="text-sm">{book?.series?.name || "—"}</TableCell>
+      <TableCell className="text-sm max-w-[150px] truncate" title={book?.author}>{book?.author || "—"}</TableCell>
+      <TableCell className="text-sm">
+        {request.reader_id && onReaderClick ? (
+          <button
+            className="text-primary hover:underline text-left"
+            onClick={() => onReaderClick(request.reader_id!)}
+          >
+            {request.renter_name}
+          </button>
+        ) : (
+          request.renter_name
+        )}
+      </TableCell>
+      <TableCell>{getStatusBadge(request.status)}</TableCell>
+      <TableCell>
+        <div className="flex gap-1">
+          {onApprove && (
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={onApprove} title="Схвалити">
+              <CheckCircle className="w-4 h-4 text-green-600" />
+            </Button>
+          )}
+          {onReturn && (
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={onReturn} title="Повернути">
+              <RotateCcw className="w-4 h-4" />
+            </Button>
+          )}
+          {onDecline && (
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={onDecline} title="Відхилити">
+              <XCircle className="w-4 h-4 text-red-500" />
+            </Button>
+          )}
+          {onSendReminder && (
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={onSendReminder} title="Нагадування">
+              <Mail className="w-4 h-4" />
+            </Button>
+          )}
+          {onReassign && (
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={onReassign} title="Перепризначити читача">
+              <User className="w-4 h-4" />
+            </Button>
+          )}
+        </div>
+      </TableCell>
+    </TableRow>
   );
 };
 

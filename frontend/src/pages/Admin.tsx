@@ -13,6 +13,7 @@ import {
   ArrowLeft,
   BookPlus,
   FileUp,
+  FileDown,
   CheckCircle,
   XCircle,
   Mail,
@@ -26,14 +27,21 @@ import {
   Check,
   ChevronsUpDown,
   Baby,
-  Merge
+  Merge,
+  ChevronUp,
+  ChevronDown,
+  Filter
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
+import { formatDueDate, isOverdue } from "@/lib/rentals";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Link, useNavigate } from "react-router-dom";
 import AddBookDialog from "@/components/admin/AddBookDialog";
+import BookLookupDialog from "@/components/admin/BookLookupDialog";
+import type { BookPrefill } from "@/lib/api-types";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import RentalRequestCard from "@/components/admin/RentalRequestCard";
 import ManageCategoriesDialog from "@/components/admin/ManageCategoriesDialog";
 import ManageSeriesDialog from "@/components/admin/ManageSeriesDialog";
@@ -41,6 +49,11 @@ import ManagePublishersDialog from "@/components/admin/ManagePublishersDialog";
 import { ImportBooksFromExcel } from "@/components/admin/ImportBooksFromExcel";
 import ManageReadersDialog from "@/components/admin/ManageReadersDialog";
 import AdminCreateRentalDialog from "@/components/admin/AdminCreateRentalDialog";
+import OverdueRemindersDialog from "@/components/admin/OverdueRemindersDialog";
+import { AdminUsersTab } from "@/components/admin/AdminUsersTab";
+import { AuditLogTab } from "@/components/admin/AuditLogTab";
+import * as XLSX from 'xlsx';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 const Admin = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -60,6 +73,7 @@ const Admin = () => {
   const [adminBookSeries, setAdminBookSeries] = useState("all");
   const [adminBookPublisher, setAdminBookPublisher] = useState("all");
   const [adminBookAvailability, setAdminBookAvailability] = useState("all");
+  const [adminBookAuthor, setAdminBookAuthor] = useState("all");
   const [userSearchQuery, setUserSearchQuery] = useState("");
   const [categorySearchQuery, setCategorySearchQuery] = useState("");
   const [seriesSearchQuery, setSeriesSearchQuery] = useState("");
@@ -68,6 +82,8 @@ const Admin = () => {
   const [journalSearchQuery, setJournalSearchQuery] = useState("");
   const [isAddBookOpen, setIsAddBookOpen] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [isLookupOpen, setIsLookupOpen] = useState(false);
+  const [importPrefill, setImportPrefill] = useState<BookPrefill | null>(null);
   const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [isSeriesDialogOpen, setIsSeriesDialogOpen] = useState(false);
@@ -76,6 +92,7 @@ const Admin = () => {
   const [editingPublisher, setEditingPublisher] = useState<Publisher | null>(null);
   const [isReaderDialogOpen, setIsReaderDialogOpen] = useState(false);
   const [isCreateRentalOpen, setIsCreateRentalOpen] = useState(false);
+  const [isOverdueDialogOpen, setIsOverdueDialogOpen] = useState(false);
   const [editingReader, setEditingReader] = useState<ReaderWithChildren | null>(null);
   const [reassigningChild, setReassigningChild] = useState<Child | null>(null);
   const [reassignReaderId, setReassignReaderId] = useState("");
@@ -86,6 +103,40 @@ const Admin = () => {
   const [mergingReader, setMergingReader] = useState<ReaderWithChildren | null>(null);
   const [mergeTargetId, setMergeTargetId] = useState("");
   const [mergePopoverOpen, setMergePopoverOpen] = useState(false);
+  const [reassigningRental, setReassigningRental] = useState<RentalRequest | null>(null);
+  const [reassignTargetReaderId, setReassignTargetReaderId] = useState("");
+  const [reassignTargetChildId, setReassignTargetChildId] = useState("");
+  const [activeTab, setActiveTab] = useState(() => {
+    const hash = window.location.hash.replace('#', '');
+    return hash || localStorage.getItem('admin_tab') || "requests";
+  });
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab);
+    localStorage.setItem('admin_tab', tab);
+    window.location.hash = tab;
+  };
+  // Request filters & sorting
+  const [requestFilterReader, setRequestFilterReader] = useState("all");
+  const [requestFilterSeries, setRequestFilterSeries] = useState("all");
+  const [requestSortField, setRequestSortField] = useState("date");
+  const [requestSortDirection, setRequestSortDirection] = useState<"asc" | "desc">("desc");
+  // Journal sorting & filters
+  const [journalSortField, setJournalSortField] = useState("date");
+  const [journalSortDirection, setJournalSortDirection] = useState<"asc" | "desc">("desc");
+  const [journalFilterAuthor, setJournalFilterAuthor] = useState("all");
+  const [journalFilterSeries, setJournalFilterSeries] = useState("all");
+  const [journalFilterReader, setJournalFilterReader] = useState("all");
+  const [journalFilterBook, setJournalFilterBook] = useState("all");
+  const [requestInvSearch, setRequestInvSearch] = useState("");
+  const [bookInvSearch, setBookInvSearch] = useState("");
+  const [journalInvSearch, setJournalInvSearch] = useState("");
+  const [bookFiltersOpen, setBookFiltersOpen] = useState(false);
+  const [bookQuickFilter, setBookQuickFilter] = useState<string | null>(null);
+  const [duplicateBookId, setDuplicateBookId] = useState<string | null>(null);
+  const [duplicateInvNumber, setDuplicateInvNumber] = useState("");
+  const [duplicateSupplier, setDuplicateSupplier] = useState("");
+  const [deleteCopies, setDeleteCopies] = useState<Book[] | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -368,6 +419,20 @@ const Admin = () => {
     }
   };
 
+  const handleReassignRental = async () => {
+    if (!reassigningRental || !reassignTargetReaderId) return;
+    try {
+      await rentalsApi.reassign(reassigningRental.id, reassignTargetReaderId, reassignTargetChildId || null);
+      toast({ title: "Оренду перепризначено" });
+      setReassigningRental(null);
+      setReassignTargetReaderId("");
+      setReassignTargetChildId("");
+      fetchRentalRequests();
+    } catch (e: any) {
+      toast({ title: "Помилка", description: e.message, variant: "destructive" });
+    }
+  };
+
   const updateRequestStatus = async (requestId: string, newStatus: "approved" | "declined" | "returned") => {
     try {
       await rentalsApi.updateStatus(requestId, newStatus);
@@ -391,37 +456,120 @@ const Admin = () => {
     }
   };
 
-  const sendReminder = async (email: string, name: string) => {
-    // TODO: Інтеграція з email сервісом
-    toast({
-      title: "Нагадування надіслано",
-      description: `Email нагадування надіслано на ${email}`,
-    });
-    console.log(`Sending reminder to ${name} at ${email}`);
+  const sendReminder = async (rental: { id: string; renter_name: string }) => {
+    try {
+      const res = await rentalsApi.remindRental(rental.id);
+      if (res.sent) {
+        toast({ title: "Нагадування надіслано", description: `Надіслано на ${res.email}` });
+      } else {
+        const reasons: Record<string, string> = {
+          no_email: "У читача не вказано email — додайте його в картці читача",
+          smtp_not_configured: "Надсилання email не налаштовано на сервері",
+        };
+        toast({ title: "Не надіслано", description: reasons[res.reason || ""] || "Не вдалося надіслати", variant: "destructive" });
+      }
+    } catch (e: any) {
+      toast({ title: "Помилка", description: e?.message || "Не вдалося надіслати нагадування", variant: "destructive" });
+    }
   };
 
-  const filteredRequests = rentalRequests.filter((request) =>
-    request.renter_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    request.book_title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    request.renter_email.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const bookMap = new Map(books.map(b => [b.id, b]));
+  const childMap = new Map(readers.flatMap(r => (r.children || []).map(c => [c.id, c])));
+  const readerMap = new Map(readers.map(r => [r.id, r]));
 
-  const pendingRequests = filteredRequests.filter(r => r.status === "pending");
-  const approvedRequests = filteredRequests.filter(r => r.status === "approved");
+  const filteredRequests = rentalRequests.filter((request) => {
+    const book = bookMap.get(request.book_id);
+    const linkedReader = request.reader_id ? readerMap.get(request.reader_id) : null;
+    const readerNameMatch = !!linkedReader && (
+      `${linkedReader.parent_name} ${linkedReader.parent_surname}`.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      `${linkedReader.parent_surname} ${linkedReader.parent_name}`.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    const matchesSearch = !searchQuery ||
+      request.renter_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      readerNameMatch ||
+      request.book_title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      request.renter_email.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesInv = !requestInvSearch || book?.inventory_number?.toString() === requestInvSearch.trim();
+    const matchesReader = requestFilterReader === "all" || request.reader_id === requestFilterReader;
+    const matchesSeries = requestFilterSeries === "all" || book?.series?.name === requestFilterSeries;
+    return matchesSearch && matchesInv && matchesReader && matchesSeries;
+  });
+
+  const sortRequests = (requests: RentalRequest[]) => {
+    return [...requests].sort((a, b) => {
+      let cmp = 0;
+      switch (requestSortField) {
+        case "date": cmp = (a.approved_at || a.requested_at).localeCompare(b.approved_at || b.requested_at); break;
+        case "book": cmp = a.book_title.localeCompare(b.book_title); break;
+        case "series": cmp = (bookMap.get(a.book_id)?.series?.name || "").localeCompare(bookMap.get(b.book_id)?.series?.name || ""); break;
+        case "author": cmp = (bookMap.get(a.book_id)?.author || "").localeCompare(bookMap.get(b.book_id)?.author || ""); break;
+        case "reader": cmp = a.renter_name.localeCompare(b.renter_name); break;
+      }
+      return requestSortDirection === "asc" ? cmp : -cmp;
+    });
+  };
+
+  const toggleRequestSort = (field: string) => {
+    if (requestSortField === field) {
+      setRequestSortDirection(d => d === "asc" ? "desc" : "asc");
+    } else {
+      setRequestSortField(field);
+      setRequestSortDirection("asc");
+    }
+  };
+
+  const handleReaderClick = (readerId: string) => {
+    handleTabChange("readers");
+    const reader = readers.find(r => r.id === readerId);
+    if (reader) setReaderSearchQuery(reader.parent_surname);
+  };
+
+  const handleBookClick = (bookTitle: string) => {
+    handleTabChange("books");
+    setBookSearchQuery(bookTitle);
+    // Scroll to the book after tab switch
+    setTimeout(() => {
+      const el = document.getElementById("books-list");
+      if (el) el.scrollIntoView({ behavior: "smooth" });
+    }, 100);
+  };
+
+  const pendingRequests = sortRequests(filteredRequests.filter(r => r.status === "pending"));
+  const approvedRequests = sortRequests(filteredRequests.filter(r => r.status === "approved"));
   const queuedRequests = filteredRequests.filter(r => r.status === "queued").sort((a, b) => (a.queue_position ?? 0) - (b.queue_position ?? 0));
-  const returnedRequests = filteredRequests.filter(r => r.status === "returned");
-  const declinedRequests = filteredRequests.filter(r => r.status === "declined");
+  const returnedRequests = sortRequests(filteredRequests.filter(r => r.status === "returned"));
+  const declinedRequests = sortRequests(filteredRequests.filter(r => r.status === "declined"));
+
+  // Build set of duplicate inventory numbers
+  const invCount = new Map<number, number>();
+  books.forEach(b => {
+    if (b.inventory_number != null) invCount.set(b.inventory_number, (invCount.get(b.inventory_number) || 0) + 1);
+  });
+  const duplicateInvNumbers = new Set([...invCount.entries()].filter(([, c]) => c > 1).map(([n]) => n));
 
   const filteredBooks = books.filter((book) => {
     const matchesSearch =
       book.title.toLowerCase().includes(bookSearchQuery.toLowerCase()) ||
       book.author.toLowerCase().includes(bookSearchQuery.toLowerCase()) ||
       book.category.toLowerCase().includes(bookSearchQuery.toLowerCase());
+    const matchesInv = !bookInvSearch || book.inventory_number?.toString() === bookInvSearch.trim();
     const matchesCategory = adminBookCategory === "all" || book.category === adminBookCategory;
     const matchesSeries = adminBookSeries === "all" || book.series?.name === adminBookSeries;
     const matchesPublisher = adminBookPublisher === "all" || book.publishers?.name === adminBookPublisher;
     const matchesAvailability = adminBookAvailability === "all" || (adminBookAvailability === "available" ? book.available : !book.available);
-    return matchesSearch && matchesCategory && matchesSeries && matchesPublisher && matchesAvailability;
+    const matchesAuthor = adminBookAuthor === "all" || book.author === adminBookAuthor;
+
+    // Quick filters
+    let matchesQuick = true;
+    if (bookQuickFilter === "no-inv") {
+      matchesQuick = book.inventory_number == null || duplicateInvNumbers.has(book.inventory_number);
+    } else if (bookQuickFilter === "no-image") {
+      matchesQuick = !book.cover_image_url;
+    } else if (bookQuickFilter === "no-age") {
+      matchesQuick = !book.age;
+    }
+
+    return matchesSearch && matchesInv && matchesCategory && matchesSeries && matchesPublisher && matchesAvailability && matchesAuthor && matchesQuick;
   });
 
   // Group filtered books by title+author for admin display
@@ -444,29 +592,49 @@ const Admin = () => {
     return Array.from(groups.values());
   })();
 
-  const handleAddCopy = async (bookId: string) => {
+  const handleAddCopy = (bookId: string) => {
+    setDuplicateBookId(bookId);
+    setDuplicateInvNumber("");
+    setDuplicateSupplier("");
+  };
+
+  const confirmAddCopy = async () => {
+    if (!duplicateBookId) return;
     try {
-      await booksApi.duplicate(bookId);
+      const invNum = duplicateInvNumber.trim() ? parseInt(duplicateInvNumber) : null;
+      await booksApi.duplicate(duplicateBookId, invNum, duplicateSupplier || null);
       toast({ title: "Примірник додано" });
       fetchBooks();
     } catch (e) {
       toast({ title: "Помилка", description: "Не вдалося додати примірник", variant: "destructive" });
     }
+    setDuplicateBookId(null);
   };
 
-  const handleRemoveCopy = async (copies: Book[]) => {
-    const availableCopy = copies.find(b => b.available);
-    if (!availableCopy) {
+  const handleRemoveCopy = (copies: Book[]) => {
+    const availableCopies = copies.filter(b => b.available);
+    if (availableCopies.length === 0) {
       toast({ title: "Помилка", description: "Всі примірники орендовані — видалити неможливо", variant: "destructive" });
       return;
     }
+    if (availableCopies.length === 1) {
+      // Only one available copy — delete it directly
+      confirmDeleteCopy(availableCopies[0].id);
+    } else {
+      // Multiple available — let admin choose which one
+      setDeleteCopies(availableCopies);
+    }
+  };
+
+  const confirmDeleteCopy = async (bookId: string) => {
     try {
-      await booksApi.delete(availableCopy.id);
+      await booksApi.delete(bookId);
       toast({ title: "Примірник видалено" });
       fetchBooks();
     } catch (e: any) {
       toast({ title: "Помилка", description: e.message || "Не вдалося видалити примірник", variant: "destructive" });
     }
+    setDeleteCopies(null);
   };
 
   const filteredUsers = users.filter((user) =>
@@ -503,28 +671,97 @@ const Admin = () => {
     return age;
   };
 
-  // Journal: approved + returned rentals with author lookup
-  const bookMap = new Map(books.map(b => [b.id, b]));
-  const childMap = new Map(readers.flatMap(r => (r.children || []).map(c => [c.id, c])));
+  // Journal: returned rentals with author/series lookup, sorting & filtering
+  const toggleJournalSort = (field: string) => {
+    if (journalSortField === field) {
+      setJournalSortDirection(d => d === "asc" ? "desc" : "asc");
+    } else {
+      setJournalSortField(field);
+      setJournalSortDirection("asc");
+    }
+  };
+
   const journalEntries = rentalRequests
     .filter(r => r.status === "returned")
     .filter(r => {
-      if (!journalSearchQuery) return true;
-      const q = journalSearchQuery.toLowerCase();
-      const author = bookMap.get(r.book_id)?.author || "";
-      return r.renter_name.toLowerCase().includes(q) ||
-        r.book_title.toLowerCase().includes(q) ||
-        author.toLowerCase().includes(q);
+      if (journalSearchQuery) {
+        const q = journalSearchQuery.toLowerCase();
+        const jBook = bookMap.get(r.book_id);
+        const author = jBook?.author || "";
+        if (!(r.renter_name.toLowerCase().includes(q) ||
+          r.book_title.toLowerCase().includes(q) ||
+          author.toLowerCase().includes(q))) return false;
+      }
+      if (journalInvSearch) {
+        const jBook = bookMap.get(r.book_id);
+        if (jBook?.inventory_number?.toString() !== journalInvSearch.trim()) return false;
+      }
+      const book = bookMap.get(r.book_id);
+      if (journalFilterAuthor !== "all" && book?.author !== journalFilterAuthor) return false;
+      if (journalFilterSeries !== "all" && book?.series?.name !== journalFilterSeries) return false;
+      if (journalFilterReader !== "all" && r.renter_name !== journalFilterReader) return false;
+      if (journalFilterBook !== "all" && r.book_title !== journalFilterBook) return false;
+      return true;
     })
     .sort((a, b) => {
-      const da = a.approved_at || a.requested_at;
-      const db = b.approved_at || b.requested_at;
-      return db.localeCompare(da);
+      let cmp = 0;
+      switch (journalSortField) {
+        case "date": cmp = (a.approved_at || a.requested_at).localeCompare(b.approved_at || b.requested_at); break;
+        case "author": cmp = (bookMap.get(a.book_id)?.author || "").localeCompare(bookMap.get(b.book_id)?.author || ""); break;
+        case "title": cmp = a.book_title.localeCompare(b.book_title); break;
+        case "series": cmp = (bookMap.get(a.book_id)?.series?.name || "").localeCompare(bookMap.get(b.book_id)?.series?.name || ""); break;
+        case "return_date": cmp = (a.return_date || "").localeCompare(b.return_date || ""); break;
+        case "reader": cmp = a.renter_name.localeCompare(b.renter_name); break;
+        case "child": cmp = (childMap.get(a.child_id || "")?.name || "").localeCompare(childMap.get(b.child_id || "")?.name || ""); break;
+      }
+      return journalSortDirection === "asc" ? cmp : -cmp;
     });
 
-  const handleEditBook = (book: Book) => {
+  // Unique values for journal filter dropdowns
+  const journalAuthors = [...new Set(books.map(b => b.author).filter(Boolean))].sort();
+  const journalSeriesNames = [...new Set(books.map(b => b.series?.name).filter(Boolean) as string[])].sort();
+  const journalReaders = [...new Set(rentalRequests.filter(r => r.status === "returned").map(r => r.renter_name))].sort();
+  const journalBookTitles = [...new Set(rentalRequests.filter(r => r.status === "returned").map(r => r.book_title))].sort();
+
+  const [editingBookCopies, setEditingBookCopies] = useState<Book[]>([]);
+
+  const handleEditBook = (book: Book, copies?: Book[]) => {
     setEditingBook(book);
+    setEditingBookCopies(copies && copies.length > 1 ? copies : []);
     setIsAddBookOpen(true);
+  };
+
+  const handleDeleteBook = async (bookId: string) => {
+    try {
+      await booksApi.delete(bookId);
+      toast({ title: "Книгу видалено" });
+      fetchBooks();
+    } catch (e: any) {
+      toast({ title: "Помилка", description: e.message || "Не вдалося видалити книгу", variant: "destructive" });
+    }
+  };
+
+  const handleExportBooks = () => {
+    const exportData = books.map((b, idx) => ({
+      '№': idx + 1,
+      'Інв. №': b.inventory_number || '',
+      'Категорія': b.category,
+      'Автор': b.author,
+      'Назва': b.title,
+      'Наявність': b.available ? 'Так' : 'Ні',
+      'Серія': b.series?.name || '',
+      'Видавництво': b.publishers?.name || '',
+      'Рік видання': b.publication_year || '',
+      'ISBN': b.isbn || '',
+      'Даритель': b.supplier || '',
+      'Вік': b.age || '',
+      'Опис': b.description || '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Книги');
+    XLSX.writeFile(wb, `бібліотека_книги_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    toast({ title: "Експорт завершено", description: `${books.length} книг експортовано` });
   };
 
   const [availabilityBook, setAvailabilityBook] = useState<Book | null>(null);
@@ -552,6 +789,7 @@ const Admin = () => {
     setIsAddBookOpen(open);
     if (!open) {
       setEditingBook(null);
+      setImportPrefill(null);
     }
   };
 
@@ -586,16 +824,17 @@ const Admin = () => {
       </div>
 
       <div className="container mx-auto px-4 py-8">
-        <Tabs defaultValue="requests" className="space-y-6">
+        <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-6">
           <TabsList>
             <TabsTrigger value="requests">Запити на оренду</TabsTrigger>
             <TabsTrigger value="journal">Журнал</TabsTrigger>
             <TabsTrigger value="books">Управління книгами</TabsTrigger>
-            <TabsTrigger value="users">Користувачі</TabsTrigger>
             <TabsTrigger value="categories">Категорії</TabsTrigger>
             <TabsTrigger value="series">Серії</TabsTrigger>
             <TabsTrigger value="publishers">Видавництва</TabsTrigger>
             <TabsTrigger value="readers">Читачі</TabsTrigger>
+            <TabsTrigger value="users">Адміністратори</TabsTrigger>
+            <TabsTrigger value="audit">Журнал дій</TabsTrigger>
           </TabsList>
 
           <TabsContent value="requests" className="space-y-6">
@@ -612,11 +851,42 @@ const Admin = () => {
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
                   <Input
                     type="text"
-                    placeholder="Шукати за ім'ям, книгою або email..."
+                    placeholder="Шукати за ім'ям, книгою..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="pl-10"
                   />
+                </div>
+                <div className="flex flex-wrap gap-3 mt-3">
+                  <Input
+                    type="number"
+                    placeholder="Інв. №"
+                    value={requestInvSearch}
+                    onChange={(e) => setRequestInvSearch(e.target.value)}
+                    className="w-24"
+                  />
+                  <Select value={requestFilterReader} onValueChange={setRequestFilterReader}>
+                    <SelectTrigger className="w-48">
+                      <SelectValue placeholder="Читач" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Всі читачі</SelectItem>
+                      {readers.map(r => (
+                        <SelectItem key={r.id} value={r.id}>{r.parent_surname} {r.parent_name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={requestFilterSeries} onValueChange={setRequestFilterSeries}>
+                    <SelectTrigger className="w-48">
+                      <SelectValue placeholder="Серія" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Всі серії</SelectItem>
+                      {series.map(s => (
+                        <SelectItem key={s.id} value={s.name}>{s.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </CardHeader>
               <CardContent>
@@ -624,105 +894,83 @@ const Admin = () => {
                   <p className="text-center text-muted-foreground">Завантаження...</p>
                 ) : (
                   <div className="space-y-6">
-                    {/* Черга резервацій */}
-                    {queuedRequests.length > 0 && (
-                      <div>
-                        <h3 className="font-semibold mb-3 flex items-center gap-2">
-                          Черга резервацій
-                          <Badge variant="outline">{queuedRequests.length}</Badge>
-                        </h3>
-                        <div className="space-y-3">
-                          {queuedRequests.map((request) => (
-                            <RentalRequestCard
-                              key={request.id}
-                              request={request}
-                              onDecline={() => updateRequestStatus(request.id, "declined")}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    {/* Render a request table section */}
+                    {(() => {
+                      const RequestTableHeader = () => (
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="cursor-pointer select-none" onClick={() => toggleRequestSort("date")}>
+                              <div className="flex items-center gap-1">Дата {requestSortField === "date" && (requestSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                            </TableHead>
+                            <TableHead className="cursor-pointer select-none" onClick={() => toggleRequestSort("book")}>
+                              <div className="flex items-center gap-1">Книга {requestSortField === "book" && (requestSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                            </TableHead>
+                            <TableHead className="cursor-pointer select-none" onClick={() => toggleRequestSort("series")}>
+                              <div className="flex items-center gap-1">Серія {requestSortField === "series" && (requestSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                            </TableHead>
+                            <TableHead className="cursor-pointer select-none max-w-[150px]" onClick={() => toggleRequestSort("author")}>
+                              <div className="flex items-center gap-1">Автор {requestSortField === "author" && (requestSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                            </TableHead>
+                            <TableHead className="cursor-pointer select-none" onClick={() => toggleRequestSort("reader")}>
+                              <div className="flex items-center gap-1">Читач {requestSortField === "reader" && (requestSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                            </TableHead>
+                            <TableHead>Статус</TableHead>
+                            <TableHead>Дії</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                      );
 
-                    {/* Нові запити */}
-                    <div>
-                      <h3 className="font-semibold mb-3 flex items-center gap-2">
-                        Нові запити
-                        <Badge variant="default">{pendingRequests.length}</Badge>
-                      </h3>
-                      {pendingRequests.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">Немає нових запитів</p>
-                      ) : (
-                        <div className="space-y-3">
-                          {pendingRequests.map((request) => (
-                            <RentalRequestCard
-                              key={request.id}
-                              request={request}
-                              onApprove={() => updateRequestStatus(request.id, "approved")}
-                              onDecline={() => updateRequestStatus(request.id, "declined")}
-                              onSendReminder={() => sendReminder(request.renter_email, request.renter_name)}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                      const renderSection = (title: string, items: RentalRequest[], badgeVariant: "default" | "secondary" | "outline", renderRow: (r: RentalRequest) => React.ReactNode) => {
+                        if (items.length === 0 && (title === "Черга резервацій" || title === "Повернені" || title === "Відхилені")) return null;
+                        return (
+                          <div>
+                            <h3 className="font-semibold mb-3 flex items-center gap-2">
+                              {title}
+                              <Badge variant={badgeVariant}>{items.length}</Badge>
+                            </h3>
+                            {items.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">Немає запитів</p>
+                            ) : (
+                              <div className="overflow-x-auto">
+                                <Table>
+                                  <RequestTableHeader />
+                                  <TableBody>{items.map(renderRow)}</TableBody>
+                                </Table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      };
 
-                    {/* Схвалені запити */}
-                    <div>
-                      <h3 className="font-semibold mb-3 flex items-center gap-2">
-                        Схвалені
-                        <Badge variant="secondary">{approvedRequests.length}</Badge>
-                      </h3>
-                      {approvedRequests.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">Немає схвалених запитів</p>
-                      ) : (
-                        <div className="space-y-3">
-                          {approvedRequests.map((request) => (
-                            <RentalRequestCard
-                              key={request.id}
-                              request={request}
-                              onReturn={() => updateRequestStatus(request.id, "returned")}
-                              onSendReminder={() => sendReminder(request.renter_email, request.renter_name)}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Повернені запити */}
-                    {returnedRequests.length > 0 && (
-                      <div>
-                        <h3 className="font-semibold mb-3 flex items-center gap-2">
-                          Повернені
-                          <Badge variant="secondary">{returnedRequests.length}</Badge>
-                        </h3>
-                        <div className="space-y-3">
-                          {returnedRequests.map((request) => (
-                            <RentalRequestCard
-                              key={request.id}
-                              request={request}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Відхилені запити */}
-                    {declinedRequests.length > 0 && (
-                      <div>
-                        <h3 className="font-semibold mb-3 flex items-center gap-2">
-                          Відхилені
-                          <Badge variant="outline">{declinedRequests.length}</Badge>
-                        </h3>
-                        <div className="space-y-3">
-                          {declinedRequests.map((request) => (
-                            <RentalRequestCard
-                              key={request.id}
-                              request={request}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                      return <>
+                        {renderSection("Черга резервацій", queuedRequests, "outline", (request) => (
+                          <RentalRequestCard key={request.id} request={request} bookMap={bookMap} onReaderClick={handleReaderClick} onBookClick={handleBookClick}
+                            onDecline={() => updateRequestStatus(request.id, "declined")}
+                            onReassign={() => setReassigningRental(request)} />
+                        ))}
+                        {renderSection("Нові запити", pendingRequests, "default", (request) => (
+                          <RentalRequestCard key={request.id} request={request} bookMap={bookMap} onReaderClick={handleReaderClick} onBookClick={handleBookClick}
+                            onApprove={() => updateRequestStatus(request.id, "approved")}
+                            onDecline={() => updateRequestStatus(request.id, "declined")}
+                            onSendReminder={() => sendReminder(request)}
+                            onReassign={() => setReassigningRental(request)} />
+                        ))}
+                        {renderSection("Схвалені", approvedRequests, "secondary", (request) => (
+                          <RentalRequestCard key={request.id} request={request} bookMap={bookMap} onReaderClick={handleReaderClick} onBookClick={handleBookClick}
+                            onReturn={() => updateRequestStatus(request.id, "returned")}
+                            onSendReminder={() => sendReminder(request)}
+                            onReassign={() => setReassigningRental(request)} />
+                        ))}
+                        {renderSection("Повернені", returnedRequests, "secondary", (request) => (
+                          <RentalRequestCard key={request.id} request={request} bookMap={bookMap} onReaderClick={handleReaderClick} onBookClick={handleBookClick}
+                            onReassign={() => setReassigningRental(request)} />
+                        ))}
+                        {renderSection("Відхилені", declinedRequests, "outline", (request) => (
+                          <RentalRequestCard key={request.id} request={request} bookMap={bookMap} onReaderClick={handleReaderClick} onBookClick={handleBookClick}
+                            onReassign={() => setReassigningRental(request)} />
+                        ))}
+                      </>;
+                    })()}
                   </div>
                 )}
               </CardContent>
@@ -732,7 +980,19 @@ const Admin = () => {
           <TabsContent value="journal" className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>Журнал видач ({journalEntries.length})</CardTitle>
+                <div className="flex items-center justify-between gap-4">
+                  <CardTitle>Журнал видач ({journalEntries.length})</CardTitle>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 shrink-0"
+                    onClick={() => setIsOverdueDialogOpen(true)}
+                    title="Переглянути прострочені книги, додати email та надіслати нагадування"
+                  >
+                    <Mail className="w-4 h-4" />
+                    Прострочені книги
+                  </Button>
+                </div>
                 <div className="relative mt-4">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
                   <Input
@@ -741,6 +1001,51 @@ const Admin = () => {
                     value={journalSearchQuery}
                     onChange={(e) => setJournalSearchQuery(e.target.value)}
                     className="pl-10"
+                  />
+                </div>
+                <div className="flex flex-wrap gap-3 mt-3">
+                  <Input
+                    type="number"
+                    placeholder="Інв. №"
+                    value={journalInvSearch}
+                    onChange={(e) => setJournalInvSearch(e.target.value)}
+                    className="w-24"
+                  />
+                  <SearchableSelect
+                    value={journalFilterBook}
+                    onValueChange={setJournalFilterBook}
+                    options={journalBookTitles.map(t => ({ value: t, label: t }))}
+                    placeholder="Книга"
+                    searchPlaceholder="Шукати книгу..."
+                    allLabel="Всі книги"
+                    className="w-48"
+                  />
+                  <SearchableSelect
+                    value={journalFilterAuthor}
+                    onValueChange={setJournalFilterAuthor}
+                    options={journalAuthors.map(a => ({ value: a, label: a }))}
+                    placeholder="Автор"
+                    searchPlaceholder="Шукати автора..."
+                    allLabel="Всі автори"
+                    className="w-44"
+                  />
+                  <SearchableSelect
+                    value={journalFilterSeries}
+                    onValueChange={setJournalFilterSeries}
+                    options={journalSeriesNames.map(s => ({ value: s, label: s }))}
+                    placeholder="Серія"
+                    searchPlaceholder="Шукати серію..."
+                    allLabel="Всі серії"
+                    className="w-44"
+                  />
+                  <SearchableSelect
+                    value={journalFilterReader}
+                    onValueChange={setJournalFilterReader}
+                    options={journalReaders.map(r => ({ value: r, label: r }))}
+                    placeholder="Читач"
+                    searchPlaceholder="Шукати читача..."
+                    allLabel="Всі читачі"
+                    className="w-48"
                   />
                 </div>
               </CardHeader>
@@ -753,12 +1058,28 @@ const Admin = () => {
                       <TableHeader>
                         <TableRow>
                           <TableHead className="w-12">#</TableHead>
-                          <TableHead>Дата видачі</TableHead>
-                          <TableHead>Автор</TableHead>
-                          <TableHead>Назва</TableHead>
-                          <TableHead>Дата повернення</TableHead>
-                          <TableHead>Читач</TableHead>
-                          <TableHead>Дитина</TableHead>
+                          <TableHead className="cursor-pointer select-none" onClick={() => toggleJournalSort("date")}>
+                            <div className="flex items-center gap-1">Дата видачі {journalSortField === "date" && (journalSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                          </TableHead>
+                          <TableHead className="cursor-pointer select-none w-[100px] max-w-[100px]" onClick={() => toggleJournalSort("author")}>
+                            <div className="flex items-center gap-1">Автор {journalSortField === "author" && (journalSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                          </TableHead>
+                          <TableHead className="cursor-pointer select-none" onClick={() => toggleJournalSort("title")}>
+                            <div className="flex items-center gap-1">Назва {journalSortField === "title" && (journalSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                          </TableHead>
+                          <TableHead className="cursor-pointer select-none" onClick={() => toggleJournalSort("series")}>
+                            <div className="flex items-center gap-1">Серія {journalSortField === "series" && (journalSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                          </TableHead>
+                          <TableHead className="cursor-pointer select-none" onClick={() => toggleJournalSort("return_date")}>
+                            <div className="flex items-center gap-1">Дата повернення {journalSortField === "return_date" && (journalSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                          </TableHead>
+                          <TableHead>Очікуване повернення</TableHead>
+                          <TableHead className="cursor-pointer select-none" onClick={() => toggleJournalSort("reader")}>
+                            <div className="flex items-center gap-1">Читач {journalSortField === "reader" && (journalSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                          </TableHead>
+                          <TableHead className="cursor-pointer select-none" onClick={() => toggleJournalSort("child")}>
+                            <div className="flex items-center gap-1">Дитина {journalSortField === "child" && (journalSortDirection === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -770,12 +1091,23 @@ const Admin = () => {
                                 ? new Date(entry.approved_at).toLocaleDateString('uk-UA')
                                 : "—"}
                             </TableCell>
-                            <TableCell>{bookMap.get(entry.book_id)?.author || "—"}</TableCell>
+                            <TableCell className="w-[100px] max-w-[100px] truncate" title={bookMap.get(entry.book_id)?.author || ""}>{bookMap.get(entry.book_id)?.author || "—"}</TableCell>
                             <TableCell className="font-medium">{entry.book_title}</TableCell>
+                            <TableCell>{bookMap.get(entry.book_id)?.series?.name || "—"}</TableCell>
                             <TableCell className="whitespace-nowrap">
                               {entry.return_date
                                 ? new Date(entry.return_date).toLocaleDateString('uk-UA')
                                 : "—"}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap">
+                              {entry.return_date ? (
+                                <span className="text-muted-foreground">—</span>
+                              ) : (
+                                <span className={isOverdue(entry.approved_at, entry.rental_duration, entry.return_date) ? "text-red-600 font-semibold" : ""}>
+                                  {formatDueDate(entry.approved_at, entry.rental_duration)}
+                                  {isOverdue(entry.approved_at, entry.rental_duration, entry.return_date) ? " · прострочено" : ""}
+                                </span>
+                              )}
                             </TableCell>
                             <TableCell>{entry.renter_name}</TableCell>
                             <TableCell>
@@ -795,80 +1127,136 @@ const Admin = () => {
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle>Імпорт книг з Excel</CardTitle>
+                  <CardTitle>Управління книгами ({groupedBooks.length} назв, {books.length} прим.)</CardTitle>
+                  <div className="flex gap-2">
+                    <Button variant="outline" onClick={handleExportBooks} className="gap-2">
+                      <FileDown className="w-4 h-4" />
+                      Експорт
+                    </Button>
+                    <Button variant="outline" onClick={() => setIsLookupOpen(true)} className="gap-2">
+                      <Search className="w-4 h-4" />
+                      Знайти онлайн
+                    </Button>
+                    <Button onClick={() => setIsAddBookOpen(true)} className="gap-2">
+                      <BookPlus className="w-4 h-4" />
+                      Додати книгу
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
-              <CardContent>
-                <ImportBooksFromExcel />
+              <CardContent className="space-y-4">
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                    <Input
+                      type="text"
+                      placeholder="Шукати книгу за назвою, автором або категорією..."
+                      value={bookSearchQuery}
+                      onChange={(e) => setBookSearchQuery(e.target.value)}
+                      className="pl-10 border-2"
+                    />
+                  </div>
+                  <Input
+                    type="number"
+                    placeholder="Інв. №"
+                    value={bookInvSearch}
+                    onChange={(e) => setBookInvSearch(e.target.value)}
+                    className="w-24 border-2"
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Collapsible open={bookFiltersOpen} onOpenChange={setBookFiltersOpen}>
+                  <CollapsibleTrigger asChild>
+                    <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground">
+                      <Filter className="w-4 h-4" />
+                      Фільтри
+                      {(adminBookCategory !== "all" || adminBookSeries !== "all" || adminBookPublisher !== "all" || adminBookAvailability !== "all" || adminBookAuthor !== "all") && (
+                        <Badge variant="secondary" className="ml-1">Активні</Badge>
+                      )}
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div className="flex flex-wrap gap-3 mt-3 p-3 bg-muted/50 rounded-lg">
+                      <SearchableSelect
+                        value={adminBookCategory}
+                        onValueChange={setAdminBookCategory}
+                        options={categories.map(cat => ({ value: cat.name, label: cat.name }))}
+                        placeholder="Категорія"
+                        searchPlaceholder="Шукати категорію..."
+                        allLabel="Всі категорії"
+                        className="w-40"
+                      />
+                      <SearchableSelect
+                        value={adminBookSeries}
+                        onValueChange={setAdminBookSeries}
+                        options={series.map(s => ({ value: s.name, label: s.name }))}
+                        placeholder="Серія"
+                        searchPlaceholder="Шукати серію..."
+                        allLabel="Всі серії"
+                        className="w-40"
+                      />
+                      <SearchableSelect
+                        value={adminBookPublisher}
+                        onValueChange={setAdminBookPublisher}
+                        options={publishers.map(pub => ({ value: pub.name, label: pub.name }))}
+                        placeholder="Видавництво"
+                        searchPlaceholder="Шукати видавництво..."
+                        allLabel="Всі видавництва"
+                        className="w-44"
+                      />
+                      <SearchableSelect
+                        value={adminBookAuthor}
+                        onValueChange={setAdminBookAuthor}
+                        options={[...new Set(books.map(b => b.author).filter(Boolean))].sort().map(a => ({ value: a, label: a }))}
+                        placeholder="Автор"
+                        searchPlaceholder="Шукати автора..."
+                        allLabel="Всі автори"
+                        className="w-44"
+                      />
+                      <Select value={adminBookAvailability} onValueChange={setAdminBookAvailability}>
+                        <SelectTrigger className="w-40">
+                          <SelectValue placeholder="Наявність" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Всі</SelectItem>
+                          <SelectItem value="available">В наявності</SelectItem>
+                          <SelectItem value="unavailable">Орендовані</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+                  <span className="text-xs text-muted-foreground mx-1">|</span>
+                  <Button
+                    variant={bookQuickFilter === "no-inv" ? "default" : "outline"}
+                    size="sm"
+                    className="text-xs h-8"
+                    onClick={() => setBookQuickFilter(bookQuickFilter === "no-inv" ? null : "no-inv")}
+                  >
+                    Без інв. / дублі
+                  </Button>
+                  <Button
+                    variant={bookQuickFilter === "no-image" ? "default" : "outline"}
+                    size="sm"
+                    className="text-xs h-8"
+                    onClick={() => setBookQuickFilter(bookQuickFilter === "no-image" ? null : "no-image")}
+                  >
+                    Без фото
+                  </Button>
+                  <Button
+                    variant={bookQuickFilter === "no-age" ? "default" : "outline"}
+                    size="sm"
+                    className="text-xs h-8"
+                    onClick={() => setBookQuickFilter(bookQuickFilter === "no-age" ? null : "no-age")}
+                  >
+                    Без віку
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle>Управління книгами ({groupedBooks.length} назв, {books.length} прим.)</CardTitle>
-                  <Button onClick={() => setIsAddBookOpen(true)} className="gap-2">
-                    <BookPlus className="w-4 h-4" />
-                    Додати книгу
-                  </Button>
-                </div>
-                <div className="relative mt-4">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
-                  <Input
-                    type="text"
-                    placeholder="Шукати книгу за назвою, автором або категорією..."
-                    value={bookSearchQuery}
-                    onChange={(e) => setBookSearchQuery(e.target.value)}
-                    className="pl-10"
-                  />
-                </div>
-                <div className="flex flex-wrap gap-3 mt-3">
-                  <Select value={adminBookCategory} onValueChange={setAdminBookCategory}>
-                    <SelectTrigger className="w-40">
-                      <SelectValue placeholder="Категорія" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Всі категорії</SelectItem>
-                      {categories.map((cat) => (
-                        <SelectItem key={cat.id} value={cat.name}>{cat.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={adminBookSeries} onValueChange={setAdminBookSeries}>
-                    <SelectTrigger className="w-40">
-                      <SelectValue placeholder="Серія" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Всі серії</SelectItem>
-                      {series.map((s) => (
-                        <SelectItem key={s.id} value={s.name}>{s.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={adminBookPublisher} onValueChange={setAdminBookPublisher}>
-                    <SelectTrigger className="w-44">
-                      <SelectValue placeholder="Видавництво" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Всі видавництва</SelectItem>
-                      {publishers.map((pub) => (
-                        <SelectItem key={pub.id} value={pub.name}>{pub.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={adminBookAvailability} onValueChange={setAdminBookAvailability}>
-                    <SelectTrigger className="w-40">
-                      <SelectValue placeholder="Наявність" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Всі</SelectItem>
-                      <SelectItem value="available">В наявності</SelectItem>
-                      <SelectItem value="unavailable">Орендовані</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </CardHeader>
-              <CardContent>
+            <Card id="books-list">
+              <CardContent className="pt-6">
                 {loading ? (
                   <p className="text-center text-muted-foreground">Завантаження...</p>
                 ) : groupedBooks.length === 0 ? (
@@ -902,6 +1290,11 @@ const Admin = () => {
                                   <Badge variant="outline">
                                     Примірники: {total} ({available} дост.)
                                   </Badge>
+                                  {available < total && (
+                                    <Badge variant="secondary" className="bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200">
+                                      {total - available} на руках
+                                    </Badge>
+                                  )}
                                 </div>
                               </div>
                               <div className="flex items-center gap-2">
@@ -930,12 +1323,46 @@ const Admin = () => {
                                 <Button
                                   variant="outline"
                                   size="icon"
-                                  onClick={() => handleEditBook(book)}
+                                  onClick={() => handleEditBook(book, copies)}
                                 >
                                   <Edit className="w-4 h-4" />
                                 </Button>
                               </div>
                             </div>
+                            {/* On-hand copies: who holds them and until when (shown for single- and multi-copy books) */}
+                            {copies.some((c) => !c.available) && (
+                              <div className="flex flex-col gap-1 mt-2">
+                                {copies.filter((c) => !c.available).map((copy) => {
+                                  const cr = copy.current_rental;
+                                  const overdue = cr ? isOverdue(cr.approved_at, cr.rental_duration, null) : false;
+                                  return (
+                                    <div key={copy.id} className="text-xs flex flex-wrap items-center gap-1.5">
+                                      <Badge variant="secondary" className="text-xs">
+                                        {copy.inventory_number ? `Інв. ${copy.inventory_number}` : "без інв."} — видана
+                                      </Badge>
+                                      {cr ? (
+                                        <span className={overdue ? "text-red-600 font-semibold" : "text-muted-foreground"}>
+                                          на руках у {cr.renter_name} до {formatDueDate(cr.approved_at, cr.rental_duration)}
+                                          {overdue ? " · прострочено" : ""}
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted-foreground">на руках</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {/* Available copies summary (only when multiple copies) */}
+                            {copies.length > 1 && copies.some((c) => c.available) && (
+                              <div className="flex flex-wrap gap-1.5 mt-2">
+                                {copies.filter((c) => c.available).map((copy) => (
+                                  <Badge key={copy.id} variant="outline" className="text-xs">
+                                    {copy.inventory_number ? `Інв. ${copy.inventory_number}` : "без інв."}{copy.supplier ? ` (${copy.supplier})` : ""} — вільна
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </Card>
@@ -946,64 +1373,6 @@ const Admin = () => {
             </Card>
           </TabsContent>
 
-          <TabsContent value="users" className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Користувачі ({users.length})</CardTitle>
-                <div className="relative mt-4">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
-                  <Input
-                    type="text"
-                    placeholder="Шукати за іменем..."
-                    value={userSearchQuery}
-                    onChange={(e) => setUserSearchQuery(e.target.value)}
-                    className="pl-10"
-                  />
-                </div>
-              </CardHeader>
-              <CardContent>
-                {loading ? (
-                  <p className="text-center text-muted-foreground">Завантаження...</p>
-                ) : filteredUsers.length === 0 ? (
-                  <p className="text-center text-muted-foreground">
-                    {userSearchQuery ? "Користувачів не знайдено" : "Немає користувачів"}
-                  </p>
-                ) : (
-                  <div className="grid gap-4">
-                    {filteredUsers.map((user) => (
-                      <Card key={user.id} className="overflow-hidden">
-                        <div className="flex gap-4 p-4">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="flex-1 min-w-0">
-                                <h3 className="font-semibold text-lg">{user.full_name}</h3>
-                                <div className="flex flex-wrap gap-2 mt-2">
-                                  <Badge variant={user.role === 'admin' ? 'default' : 'secondary'}>
-                                    {user.role === 'admin' ? 'Адміністратор' : 'Читач'}
-                                  </Badge>
-                                </div>
-                              </div>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => updateUserRole(
-                                  user.id,
-                                  user.role === 'admin' ? 'user' : 'admin'
-                                )}
-                                disabled={user.id === currentUserId}
-                              >
-                                {user.role === 'admin' ? 'Зробити читачем' : 'Зробити адміном'}
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
-                      </Card>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
 
           <TabsContent value="categories" className="space-y-6">
             <Card>
@@ -1302,14 +1671,111 @@ const Admin = () => {
               </CardContent>
             </Card>
           </TabsContent>
+
+          <TabsContent value="users" className="space-y-6">
+            {activeTab === "users" && <AdminUsersTab />}
+          </TabsContent>
+
+          <TabsContent value="audit" className="space-y-6">
+            {activeTab === "audit" && <AuditLogTab />}
+          </TabsContent>
         </Tabs>
       </div>
 
+      <AlertDialog open={!!deleteCopies} onOpenChange={(open) => { if (!open) setDeleteCopies(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Який примірник видалити?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Оберіть примірник для видалення:
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2">
+            {deleteCopies?.map((copy) => (
+              <Button
+                key={copy.id}
+                variant="outline"
+                className="w-full justify-between"
+                onClick={() => confirmDeleteCopy(copy.id)}
+              >
+                <span>Інв. {copy.inventory_number ?? "—"}</span>
+                <Badge variant="outline" className="text-xs">вільна</Badge>
+              </Button>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Скасувати</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!duplicateBookId} onOpenChange={(open) => { if (!open) { setDuplicateBookId(null); setDuplicateSupplier(""); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Додати примірник</AlertDialogTitle>
+            <AlertDialogDescription>
+              Вкажіть інвентарний номер для нового примірника (або залиште порожнім)
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            type="number"
+            placeholder="Інвентарний номер"
+            value={duplicateInvNumber}
+            onChange={(e) => setDuplicateInvNumber(e.target.value)}
+            autoFocus
+          />
+          <Input
+            placeholder="Даритель (необов'язково)"
+            value={duplicateSupplier}
+            onChange={(e) => setDuplicateSupplier(e.target.value)}
+            className="mt-2"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Скасувати</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmAddCopy}>Додати</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AddBookDialog
         open={isAddBookOpen}
-        onOpenChange={handleCloseDialog}
+        onOpenChange={(open) => { handleCloseDialog(open); if (!open) setEditingBookCopies([]); }}
         onSuccess={fetchBooks}
+        onDelete={handleDeleteBook}
         book={editingBook}
+        copies={editingBookCopies}
+        initialData={importPrefill ? {
+          title: importPrefill.title,
+          author: importPrefill.author,
+          description: importPrefill.description,
+          publicationYear: importPrefill.publicationYear,
+          isbn: importPrefill.isbn,
+          age: importPrefill.age,
+          categoryId: importPrefill.categoryId,
+          publisherId: importPrefill.publisherId,
+          seriesId: importPrefill.seriesId,
+          coverImageUrl: importPrefill.coverImageUrl,
+        } : null}
+        allInventoryNumbers={(() => {
+          const m = new Map<number, string>();
+          books.forEach(b => { if (b.inventory_number != null) m.set(b.inventory_number, b.id); });
+          return m;
+        })()}
+      />
+
+      <BookLookupDialog
+        open={isLookupOpen}
+        onOpenChange={setIsLookupOpen}
+        onImported={(prefill) => {
+          setEditingBook(null);
+          setEditingBookCopies([]);
+          setImportPrefill(prefill);
+          setIsLookupOpen(false);
+          setIsAddBookOpen(true);
+          if (prefill.publisherId == null && prefill.publisherName) {
+            toast({ title: "Перевірте видавництво", description: `Видавництво «${prefill.publisherName}» не знайдено у базі — оберіть або створіть його у формі.` });
+          }
+        }}
       />
 
       <ManageCategoriesDialog
@@ -1348,6 +1814,11 @@ const Admin = () => {
         books={books}
         readers={readers}
         onSuccess={() => { fetchRentalRequests(); fetchBooks(); }}
+      />
+
+      <OverdueRemindersDialog
+        open={isOverdueDialogOpen}
+        onOpenChange={setIsOverdueDialogOpen}
       />
 
       <ManageReadersDialog
@@ -1563,6 +2034,47 @@ const Admin = () => {
             <AlertDialogAction onClick={handleMergeReader} disabled={!mergeTargetId}>
               Об'єднати
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Reassign rental reader dialog */}
+      <AlertDialog open={!!reassigningRental} onOpenChange={(open) => { if (!open) { setReassigningRental(null); setReassignTargetReaderId(""); setReassignTargetChildId(""); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Перепризначити читача</AlertDialogTitle>
+            <AlertDialogDescription>
+              Поточний читач: {reassigningRental?.renter_name}. Оберіть нового читача для цього запиту.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-2 space-y-2">
+            <Select value={reassignTargetReaderId} onValueChange={(v) => { setReassignTargetReaderId(v); setReassignTargetChildId(""); }}>
+              <SelectTrigger>
+                <SelectValue placeholder="Оберіть читача..." />
+              </SelectTrigger>
+              <SelectContent>
+                {readers.map(r => (
+                  <SelectItem key={r.id} value={r.id}>{r.parent_surname} {r.parent_name} — {r.phone1}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {reassignTargetReaderId && readers.find(r => r.id === reassignTargetReaderId)?.children.length! > 0 && (
+              <Select value={reassignTargetChildId || "none"} onValueChange={(v) => setReassignTargetChildId(v === "none" ? "" : v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Оберіть дитину..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— без дитини —</SelectItem>
+                  {readers.find(r => r.id === reassignTargetReaderId)?.children.map(c => (
+                    <SelectItem key={c.id} value={c.id}>{c.name} {c.surname}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Скасувати</AlertDialogCancel>
+            <AlertDialogAction onClick={handleReassignRental} disabled={!reassignTargetReaderId}>Перепризначити</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

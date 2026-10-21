@@ -1,11 +1,21 @@
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { readersApi, rentalsApi } from "@/lib/api";
 import type { RentalHistory } from "@/lib/api-types";
-import { Calendar, BookOpen, Clock } from "lucide-react";
+import { Calendar, BookOpen, Clock, Printer, Mail } from "lucide-react";
 import { format } from "date-fns";
 import { uk } from "date-fns/locale";
+import { computeDueDate, isOverdue, formatDate as fmtDue, parseServerDate } from "@/lib/rentals";
+import { cn } from "@/lib/utils";
+import { printHtml, escapeHtml } from "@/lib/print";
+import { useToast } from "@/hooks/use-toast";
+
+const STATUS_UK: Record<string, string> = {
+  approved: "На руках", returned: "Повернено", pending: "Очікує",
+  declined: "Відхилено", queued: "У черзі",
+};
 
 interface ReaderHistoryDialogProps {
   open: boolean;
@@ -16,7 +26,9 @@ interface ReaderHistoryDialogProps {
 const ReaderHistoryDialog = ({ open, onOpenChange, readerId }: ReaderHistoryDialogProps) => {
   const [history, setHistory] = useState<RentalHistory[]>([]);
   const [loading, setLoading] = useState(true);
-  const [readerInfo, setReaderInfo] = useState<{ parent_name: string; parent_surname: string } | null>(null);
+  const [readerInfo, setReaderInfo] = useState<{ parent_name: string; parent_surname: string; email: string } | null>(null);
+  const [sendingEmail, setSendingEmail] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     if (open && readerId) {
@@ -30,7 +42,7 @@ const ReaderHistoryDialog = ({ open, onOpenChange, readerId }: ReaderHistoryDial
     try {
       // Завантажуємо інформацію про читача (з дітьми)
       const reader = await readersApi.get(readerId);
-      setReaderInfo({ parent_name: reader.parent_name, parent_surname: reader.parent_surname });
+      setReaderInfo({ parent_name: reader.parent_name, parent_surname: reader.parent_surname, email: reader.email || "" });
 
       // Завантажуємо історію орендувань
       const rentals = await rentalsApi.getByReader(readerId);
@@ -59,15 +71,83 @@ const ReaderHistoryDialog = ({ open, onOpenChange, readerId }: ReaderHistoryDial
     }
   };
 
+  const readerName = readerInfo ? `${readerInfo.parent_surname} ${readerInfo.parent_name}` : "";
+
+  const buildReportHtml = (): string => {
+    const active = history.filter((r) => r.status === "approved" && !r.return_date);
+    const activeRows = active.length
+      ? active.map((r) => {
+          const overdue = isOverdue(r.approved_at, r.rental_duration, r.return_date);
+          return `<tr><td>${escapeHtml(r.book_title)}</td><td>${escapeHtml(fmtDue(parseServerDate(r.approved_at)))}</td>` +
+            `<td class="${overdue ? "overdue" : ""}">${escapeHtml(fmtDue(computeDueDate(r.approved_at, r.rental_duration)))}${overdue ? " (прострочено)" : ""}</td></tr>`;
+        }).join("")
+      : `<tr><td colspan="3" class="muted">Немає книг на руках</td></tr>`;
+    const histRows = history.length
+      ? history.map((r) =>
+          `<tr><td>${escapeHtml(r.book_title)}</td><td>${escapeHtml(fmtDue(parseServerDate(r.requested_at)))}</td>` +
+          `<td>${escapeHtml(STATUS_UK[r.status] || r.status)}</td>` +
+          `<td>${r.return_date ? escapeHtml(fmtDue(parseServerDate(r.return_date))) : "—"}</td></tr>`
+        ).join("")
+      : `<tr><td colspan="4" class="muted">Історія порожня</td></tr>`;
+    return `
+      <div class="header"><div><h1>Довідка читача</h1><div class="muted">${escapeHtml(readerName)}</div></div>
+        <div class="muted">${escapeHtml(fmtDue(new Date()))}</div></div>
+      <h2>Книги на руках</h2>
+      <table><thead><tr><th>Назва</th><th>Видано</th><th>Повернути до</th></tr></thead><tbody>${activeRows}</tbody></table>
+      <h2>Історія читання</h2>
+      <table><thead><tr><th>Назва</th><th>Дата запиту</th><th>Статус</th><th>Повернено</th></tr></thead><tbody>${histRows}</tbody></table>
+      <div class="footer">Бібліотека</div>`;
+  };
+
+  const handlePrint = () => {
+    try {
+      printHtml(`Довідка читача — ${readerName}`, buildReportHtml());
+    } catch {
+      toast({ title: "Не вдалося відкрити друк", description: "Дозвольте спливаючі вікна у браузері", variant: "destructive" });
+    }
+  };
+
+  const handleEmail = async () => {
+    if (!readerInfo?.email) {
+      toast({ title: "Немає email", description: "У читача не вказано електронну пошту", variant: "destructive" });
+      return;
+    }
+    setSendingEmail(true);
+    try {
+      const res = await readersApi.sendReport(readerId);
+      toast({ title: "Надіслано", description: `Довідку надіслано на ${res.email}` });
+    } catch (e: any) {
+      toast({ title: "Помилка", description: e?.message || "Не вдалося надіслати email", variant: "destructive" });
+    } finally {
+      setSendingEmail(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Історія орендувань</DialogTitle>
           <DialogDescription>
-            {readerInfo && `${readerInfo.parent_surname} ${readerInfo.parent_name}`}
+            {readerName}
           </DialogDescription>
         </DialogHeader>
+
+        {!loading && (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={handlePrint} className="gap-2">
+              <Printer className="w-4 h-4" /> Друкувати
+            </Button>
+            <Button
+              variant="outline" size="sm" onClick={handleEmail}
+              disabled={sendingEmail || !readerInfo?.email}
+              title={readerInfo?.email ? `Надіслати на ${readerInfo.email}` : "У читача не вказано email"}
+              className="gap-2"
+            >
+              <Mail className="w-4 h-4" /> {sendingEmail ? "Надсилання..." : "Надіслати на пошту"}
+            </Button>
+          </div>
+        )}
 
         {loading ? (
           <div className="py-8 text-center text-muted-foreground">
@@ -109,6 +189,16 @@ const ReaderHistoryDialog = ({ open, onOpenChange, readerId }: ReaderHistoryDial
                     Підтверджено: {format(new Date(rental.approved_at), "d MMMM yyyy", { locale: uk })}
                   </div>
                 )}
+
+                {rental.status === "approved" && !rental.return_date && rental.approved_at && (() => {
+                  const due = computeDueDate(rental.approved_at, rental.rental_duration);
+                  const overdue = isOverdue(rental.approved_at, rental.rental_duration, rental.return_date);
+                  return due ? (
+                    <div className={cn("text-sm border-t pt-2", overdue ? "text-red-600 font-semibold" : "text-muted-foreground")}>
+                      Очікуване повернення: {format(due, "d MMMM yyyy", { locale: uk })}{overdue ? " · прострочено" : ""}
+                    </div>
+                  ) : null;
+                })()}
 
                 {rental.return_date && (
                   <div className="text-sm text-muted-foreground border-t pt-2">

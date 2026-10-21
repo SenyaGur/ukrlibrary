@@ -47,6 +47,14 @@ export interface Book {
   updated_at: string;
   publishers?: { name: string; city: string } | null;
   series?: { name: string } | null;
+  rental_count?: number;
+  // Present (non-null) only when the copy is currently out on loan.
+  current_rental?: {
+    renter_name: string;
+    approved_at: string | null;
+    rental_duration: number | null;
+    reader_id: string | null;
+  } | null;
 }
 
 export interface BookFilters {
@@ -55,6 +63,7 @@ export interface BookFilters {
   ages: string[];
   publishers: string[];
   series: string[];
+  suppliers: string[];
 }
 
 export interface BookMedia {
@@ -111,6 +120,7 @@ export interface Child {
 
 export interface ReaderWithChildren extends Reader {
   children: Child[];
+  active_rentals?: string[];
 }
 
 // Rentals
@@ -149,6 +159,23 @@ export interface UserProfile {
   email: string;
   role: 'admin' | 'user';
   created_at: string;
+  updated_at?: string;
+}
+
+// Audit log — a record of a single mutating action
+export interface AuditEntry {
+  id: string;
+  user_id: string | null;
+  user_email: string | null;
+  user_name: string | null;
+  action: string;      // Flask endpoint, e.g. "books.update_book"
+  method: string;      // HTTP method
+  path: string;        // request path
+  entity_type: string | null;
+  entity_id: string | null;
+  details: string | null;   // JSON string
+  status_code: number | null;
+  created_at: string;
 }
 
 // Import
@@ -156,4 +183,30 @@ export interface ImportResult {
   success: number;
   failed: number;
   errors: string[];
+}
+
+// Online book lookup (knigoland.com.ua)
+export interface BookSearchResult {
+  source: string;
+  url: string;
+  title: string;
+  thumb: string | null;
+}
+
+export interface BookPrefill {
+  title: string;
+  author: string;
+  description: string;
+  publicationYear: string;
+  isbn: string;
+  pages?: number | null;
+  language?: string;
+  age?: string;
+  coverImageUrl: string | null;
+  publisherId: string | null;
+  publisherName: string;
+  seriesId: string | null;
+  seriesName?: string;
+  categoryId: string | null;
+  sourceUrl?: string;
 }

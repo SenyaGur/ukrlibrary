@@ -11,8 +11,10 @@ interface BookCardProps {
   coverImageUrl?: string | null;
   available: boolean;
   isNew?: boolean;
+  age?: string | null;
   totalCopies?: number;
   availableCopies?: number;
+  rentalCount?: number;
   onClick: () => void;
 }
 
@@ -58,7 +60,7 @@ const adjustColor = (color: string, amount: number) => {
   return `#${(1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1)}`;
 };
 
-const BookCard = ({ id, title, author, coverColor, coverImageUrl, available, isNew, totalCopies, availableCopies, onClick }: BookCardProps) => {
+const BookCard = ({ id, title, author, coverColor, coverImageUrl, available, isNew, age, totalCopies, availableCopies, rentalCount, onClick }: BookCardProps) => {
   const resolvedCoverUrl = resolveUrl(coverImageUrl);
   // Extract dominant color from cover image, fallback to provided coverColor
   const { color: dominantColor } = useImageColor(resolvedCoverUrl, coverColor);
@@ -95,14 +97,29 @@ const BookCard = ({ id, title, author, coverColor, coverImageUrl, available, isN
             ? `${availableCopies} з ${totalCopies} дост.`
             : available ? "Доступна" : "Орендована"}
         </Badge>
+
+        {/* Age badge */}
+        {age && (
+          <Badge className="absolute bottom-2 right-2 text-xs bg-white/90 text-foreground shadow-sm border">
+            {age}
+          </Badge>
+        )}
+
+        {/* Rental count badge */}
+        {rentalCount && rentalCount > 0 && (
+          <div className="absolute bottom-2 left-2 bg-black/60 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-sm flex items-center gap-1">
+            <BookOpen className="w-3 h-3" />
+            {rentalCount}
+          </div>
+        )}
       </div>
       
       {/* Book info */}
       <div className="px-1">
-        <h3 className="font-semibold text-foreground mb-1 line-clamp-2 group-hover:text-primary transition-colors">
+        <h3 className="font-display font-medium text-sm md:text-base text-foreground mb-1 line-clamp-2 group-hover:text-primary transition-colors">
           {title}
         </h3>
-        <p className="text-sm text-muted-foreground line-clamp-1">
+        <p className="text-xs md:text-sm text-muted-foreground line-clamp-1">
           {author}
         </p>
       </div>

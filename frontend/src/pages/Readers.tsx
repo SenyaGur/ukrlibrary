@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import RegisterReaderDialog from "@/components/RegisterReaderDialog";
 import ReaderHistoryDialog from "@/components/ReaderHistoryDialog";
-import { Users, Search, Plus, Phone, MapPin, Baby, History } from "lucide-react";
+import { Users, Search, Plus, Phone, MapPin, Baby, History, BookOpen } from "lucide-react";
 import { Link } from "react-router-dom";
 import { readersApi } from "@/lib/api";
 import type { ReaderWithChildren } from "@/lib/api-types";
@@ -166,6 +166,20 @@ const Readers = () => {
                       ))}
                     </div>
                   </div>
+
+                  {reader.active_rentals && reader.active_rentals.length > 0 && (
+                    <div className="border-t pt-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <BookOpen className="w-4 h-4 text-amber-500" />
+                        <span className="text-sm font-semibold">Книги на руках ({reader.active_rentals.length}):</span>
+                      </div>
+                      <div className="space-y-1">
+                        {reader.active_rentals.map((title, i) => (
+                          <p key={i} className="text-sm text-muted-foreground">• {title}</p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <Button
                     variant="outline"

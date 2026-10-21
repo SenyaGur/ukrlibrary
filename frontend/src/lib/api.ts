@@ -4,7 +4,7 @@ import type {
   Category, Series, Publisher,
   Reader, ReaderWithChildren, Child,
   RentalRequest, RentalHistory, UserProfile, ImportResult,
-  QueueEntry
+  QueueEntry, AuditEntry, BookSearchResult, BookPrefill
 } from './api-types';
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -54,6 +54,11 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+    // On 401, clear token and redirect to login
+    if (response.status === 401 && token) {
+      setToken(null);
+      window.location.href = '/auth';
+    }
     throw new Error(error.error || error.message || `HTTP ${response.status}`);
   }
 
@@ -100,11 +105,17 @@ export const booksApi = {
   deleteMedia: (mediaId: string) =>
     apiFetch<void>(`/api/books/media/${mediaId}`, { method: 'DELETE' }),
 
+  reorderMedia: (bookId: string, order: string[]) =>
+    apiFetch<BookMedia[]>(`/api/books/${bookId}/media/reorder`, { method: 'PUT', body: JSON.stringify({ order }) }),
+
   forceAvailable: (bookId: string) =>
     apiFetch<Book>(`/api/books/${bookId}/force-available`, { method: 'PUT' }),
 
-  duplicate: (bookId: string) =>
-    apiFetch<Book>(`/api/books/${bookId}/duplicate`, { method: 'POST' }),
+  duplicate: (bookId: string, inventoryNumber?: number | null, supplier?: string | null) =>
+    apiFetch<Book>(`/api/books/${bookId}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({ inventory_number: inventoryNumber ?? null, supplier: supplier || null }),
+    }),
 
   delete: (bookId: string) =>
     apiFetch<void>(`/api/books/${bookId}`, { method: 'DELETE' }),
@@ -149,7 +160,7 @@ export const readersApi = {
   get: (id: string) => apiFetch<ReaderWithChildren>(`/api/readers/${id}`),
   create: (data: { parent_name: string; parent_surname: string; phone1: string; phone2?: string; address: string; comment?: string; children: Array<{ name: string; surname: string; birth_date: string; gender?: string }> }) =>
     apiFetch<ReaderWithChildren>('/api/readers', { method: 'POST', body: JSON.stringify(data) }),
-  update: (id: string, data: { parent_name?: string; parent_surname?: string; phone1?: string; phone2?: string; address?: string; comment?: string }) =>
+  update: (id: string, data: { parent_name?: string; parent_surname?: string; phone1?: string; phone2?: string; email?: string; address?: string; comment?: string }) =>
     apiFetch<ReaderWithChildren>(`/api/readers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (id: string) =>
     apiFetch<void>(`/api/readers/${id}`, { method: 'DELETE' }),
@@ -167,6 +178,8 @@ export const readersApi = {
     apiFetch<ReaderWithChildren>(`/api/readers/${readerId}/convert-to-child`, { method: 'POST', body: JSON.stringify({ parent_reader_id: parentReaderId }) }),
   merge: (readerId: string, targetReaderId: string) =>
     apiFetch<ReaderWithChildren>(`/api/readers/${readerId}/merge`, { method: 'POST', body: JSON.stringify({ target_reader_id: targetReaderId }) }),
+  sendReport: (readerId: string, email?: string) =>
+    apiFetch<{ sent: boolean; email: string }>(`/api/readers/${readerId}/report/send`, { method: 'POST', body: JSON.stringify(email ? { email } : {}) }),
 };
 
 // Rentals API
@@ -180,13 +193,45 @@ export const rentalsApi = {
     apiFetch<RentalHistory[]>(`/api/rentals?reader_id=${readerId}`),
   getQueue: (bookId: string) =>
     apiFetch<QueueEntry[]>(`/api/rentals/queue/${bookId}`),
+  reassign: (id: string, reader_id: string, child_id: string | null) =>
+    apiFetch<RentalRequest>(`/api/rentals/${id}/reassign`, { method: 'PUT', body: JSON.stringify({ reader_id, child_id }) }),
+  sendReceipt: (payload: {
+    reader_id?: string;
+    email?: string;
+    reader_name: string;
+    issued_at?: string;
+    items: Array<{ title: string; author?: string; inventory_number?: number | null; due?: string }>;
+  }) => apiFetch<{ sent: boolean; email: string }>('/api/rentals/receipt/send', { method: 'POST', body: JSON.stringify(payload) }),
+  getOverdue: () => apiFetch<Array<{ id: string; book_title: string; renter_name: string; reader_id: string | null; email: string; due: string; days_overdue: number; has_email: boolean }>>('/api/rentals/overdue'),
+  runOverdueReminders: () => apiFetch<{ overdue: number; emailed: number; books_covered: number; skipped_no_email: number; skipped_recent: number; failed: number; smtp_configured: boolean }>('/api/rentals/overdue/run', { method: 'POST' }),
+  remindOverdueReader: (reader_id: string) => apiFetch<{ sent: boolean; email?: string; books?: number; reason?: string }>('/api/rentals/overdue/remind', { method: 'POST', body: JSON.stringify({ reader_id }) }),
+  remindRental: (rental_id: string) => apiFetch<{ sent: boolean; email?: string; reason?: string }>(`/api/rentals/${rental_id}/remind`, { method: 'POST' }),
 };
 
 // Users API (admin)
 export const usersApi = {
   list: () => apiFetch<UserProfile[]>('/api/users'),
+  create: (data: { email: string; password: string; full_name?: string; role?: 'admin' | 'user' }) =>
+    apiFetch<UserProfile>('/api/users', { method: 'POST', body: JSON.stringify(data) }),
   updateRole: (id: string, role: 'admin' | 'user') =>
     apiFetch<UserProfile>(`/api/users/${id}/role`, { method: 'PUT', body: JSON.stringify({ role }) }),
+  delete: (id: string) =>
+    apiFetch<{ message: string }>(`/api/users/${id}`, { method: 'DELETE' }),
+};
+
+// Audit log API (admin) — records of who did what action
+export const auditApi = {
+  list: (params?: { user_id?: string; entity_type?: string; action?: string; q?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.user_id) qs.set('user_id', params.user_id);
+    if (params?.entity_type) qs.set('entity_type', params.entity_type);
+    if (params?.action) qs.set('action', params.action);
+    if (params?.q) qs.set('q', params.q);
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return apiFetch<{ items: AuditEntry[]; total: number }>(`/api/audit${suffix}`);
+  },
 };
 
 // Upload API
@@ -207,4 +252,12 @@ export const uploadApi = {
 export const importApi = {
   importBooks: (booksData: any[]) =>
     apiFetch<ImportResult>('/api/books/import', { method: 'POST', body: JSON.stringify({ booksData }) }),
+};
+
+// Online book lookup (knigoland.com.ua) — search + import metadata
+export const bookLookupApi = {
+  search: (q: string) =>
+    apiFetch<{ results: BookSearchResult[]; error?: string }>(`/api/booklookup/search?q=${encodeURIComponent(q)}`),
+  import: (url: string) =>
+    apiFetch<BookPrefill>('/api/booklookup/import', { method: 'POST', body: JSON.stringify({ url }) }),
 };

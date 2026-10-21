@@ -61,6 +61,7 @@ const BookDetailsDialog = ({
   const [isResizing, setIsResizing] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [queueLength, setQueueLength] = useState(0);
+  const [galleryTouchStart, setGalleryTouchStart] = useState<number | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Build images array: cover image first, then additional media (resolve relative URLs)
@@ -221,6 +222,16 @@ const BookDetailsDialog = ({
               background: getGradient(coverColor),
               minHeight: '280px',
               maxHeight: '55vh'
+            }}
+            onTouchStart={(e) => setGalleryTouchStart(e.touches[0].clientX)}
+            onTouchEnd={(e) => {
+              if (galleryTouchStart === null) return;
+              const diff = e.changedTouches[0].clientX - galleryTouchStart;
+              if (Math.abs(diff) > 50) {
+                if (diff > 0) prevImage();
+                else nextImage();
+              }
+              setGalleryTouchStart(null);
             }}
           >
             {allImages.length > 0 ? (
@@ -395,6 +406,28 @@ const Lightbox = ({
   onNext: () => void;
   onSelectIndex: (index: number) => void;
 }) => {
+  const [touchStart, setTouchStart] = useState<number | null>(null);
+  const lightboxRef = useRef<HTMLDivElement>(null);
+
+  // Focus the lightbox container on mount so arrow buttons receive clicks immediately
+  useEffect(() => {
+    lightboxRef.current?.focus();
+  }, []);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setTouchStart(e.touches[0].clientX);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStart === null) return;
+    const diff = e.changedTouches[0].clientX - touchStart;
+    if (Math.abs(diff) > 50) {
+      if (diff > 0) onPrev();
+      else onNext();
+    }
+    setTouchStart(null);
+  };
+
   // Handle keyboard events
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -423,13 +456,17 @@ const Lightbox = ({
 
   return (
     <div
-      className="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center"
+      ref={lightboxRef}
+      tabIndex={-1}
+      className="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center outline-none"
       onClick={handleBackdropClick}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
     >
       {/* Close button */}
       <button
         type="button"
-        onClick={onClose}
+        onClick={(e) => { e.stopPropagation(); onClose(); }}
         className="absolute top-4 right-4 text-white hover:text-white/80 p-3 rounded-full bg-white/20 hover:bg-white/30 transition-colors z-20"
         aria-label="Закрити"
       >
@@ -441,14 +478,14 @@ const Lightbox = ({
         <>
           <button
             type="button"
-            onClick={onPrev}
+            onClick={(e) => { e.stopPropagation(); onPrev(); }}
             className="absolute left-4 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white p-3 rounded-full transition-colors z-10"
           >
             <ChevronLeft className="w-8 h-8" />
           </button>
           <button
             type="button"
-            onClick={onNext}
+            onClick={(e) => { e.stopPropagation(); onNext(); }}
             className="absolute right-4 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white p-3 rounded-full transition-colors z-10"
           >
             <ChevronRight className="w-8 h-8" />
@@ -460,7 +497,8 @@ const Lightbox = ({
       <img
         src={images[currentIndex].file_url}
         alt={`${bookTitle} - зображення ${currentIndex + 1}`}
-        className="max-w-[95vw] max-h-[95vh] object-contain pointer-events-none"
+        className="max-w-[95vw] max-h-[95vh] object-contain"
+        onClick={(e) => e.stopPropagation()}
       />
 
       {/* Image counter */}
