@@ -8,21 +8,35 @@ dist-ssr/
 # Environment files
 *.local
 .env
+.env.*
+*.env
+!.env.example
 
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 venv/
+.venv/
 
-# SQLite database
+# Private exports / database files and sidecars / backups
+*.csv
 *.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db-*
+*.db.*
+*.sql.gz
+*.sql.bak
+*.bak
+/backups/
 
-# Uploads
-backend/uploads/book-covers/*
-backend/uploads/book-media/*
-!backend/uploads/book-covers/.gitkeep
-!backend/uploads/book-media/.gitkeep
+# All upload categories, retain empty-directory placeholders
+backend/uploads/**/*
+!backend/uploads/**/
+!backend/uploads/**/.gitkeep
 
 # Logs
 logs/
