@@ -195,13 +195,8 @@ export const rentalsApi = {
     apiFetch<QueueEntry[]>(`/api/rentals/queue/${bookId}`),
   reassign: (id: string, reader_id: string, child_id: string | null) =>
     apiFetch<RentalRequest>(`/api/rentals/${id}/reassign`, { method: 'PUT', body: JSON.stringify({ reader_id, child_id }) }),
-  sendReceipt: (payload: {
-    reader_id?: string;
-    email?: string;
-    reader_name: string;
-    issued_at?: string;
-    items: Array<{ title: string; author?: string; inventory_number?: number | null; due?: string }>;
-  }) => apiFetch<{ sent: boolean; email: string }>('/api/rentals/receipt/send', { method: 'POST', body: JSON.stringify(payload) }),
+  sendReceipt: (payload: { reader_id: string; rental_ids: string[] }) =>
+    apiFetch<{ sent: boolean; email: string }>('/api/rentals/receipt/send', { method: 'POST', body: JSON.stringify(payload) }),
   getOverdue: () => apiFetch<Array<{ id: string; book_title: string; renter_name: string; reader_id: string | null; email: string; due: string; days_overdue: number; has_email: boolean }>>('/api/rentals/overdue'),
   runOverdueReminders: () => apiFetch<{ overdue: number; emailed: number; books_covered: number; skipped_no_email: number; skipped_recent: number; failed: number; smtp_configured: boolean }>('/api/rentals/overdue/run', { method: 'POST' }),
   remindOverdueReader: (reader_id: string) => apiFetch<{ sent: boolean; email?: string; books?: number; reason?: string }>('/api/rentals/overdue/remind', { method: 'POST', body: JSON.stringify({ reader_id }) }),

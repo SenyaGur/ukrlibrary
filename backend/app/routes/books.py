@@ -153,7 +153,7 @@ def create_book():
             [inv_number], one=True
         )
         if existing:
-            return jsonify({'error': 'Інвентарний номер вже існує'}), 400
+            return jsonify({'error': 'Інвентарний номер вже існує. Вкажіть інший, вільний номер.'}), 400
 
     book_id = str(uuid.uuid4())
     db = get_db()
@@ -282,7 +282,7 @@ def duplicate_book(book_id):
             [inv_number], one=True
         )
         if existing:
-            return jsonify({'error': 'Інвентарний номер вже існує'}), 400
+            return jsonify({'error': 'Інвентарний номер вже існує. Вкажіть інший, вільний номер.'}), 400
 
     new_id = str(uuid.uuid4())
     db = get_db()

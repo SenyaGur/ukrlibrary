@@ -100,13 +100,21 @@ def _td(value, color=None, bold=False):
 def issue_receipt_html(reader_name, items, issued_at_str=''):
     """Receipt for a batch of just-issued books.
 
-    items: list of dicts with keys title, author, inventory_number, due.
+    items: list of dicts with title, author, inventory_number, due, child_id, child_name.
     """
-    rows = ''
-    for i in items:
-        rows += ('<tr>' + _td(i.get('title', ''), bold=True) +
-                 _td(i.get('author', '') or '—') + _td(i.get('inventory_number') or '—') +
-                 _td(i.get('due') or '—') + '</tr>')
+    groups = {}
+    for item in items:
+        groups.setdefault(item.get('child_id'), []).append(item)
+    tables = ''
+    for group in groups.values():
+        rows = ''
+        for i in group:
+            rows += ('<tr>' + _td(i.get('title', ''), bold=True) +
+                     _td(i.get('author', '') or '—') +
+                     _td(i.get('inventory_number') if i.get('inventory_number') is not None else '—') +
+                     _td(i.get('due') or '—') + '</tr>')
+        tables += (f'<h2 style="font-size:16px;margin:16px 0 4px;">{escape(group[0].get("child_name") or "Читач особисто")}</h2>' +
+                   _table(['Назва', 'Автор', 'Інв. №', 'Повернути до'], rows))
     due_values = [i.get('due') for i in items if i.get('due')]
     return_by = due_values[0] if due_values else '—'
 
@@ -115,7 +123,7 @@ def issue_receipt_html(reader_name, items, issued_at_str=''):
         f'<p style="margin:0 0 10px;">Вітаємо, <strong>{who}</strong>!</p>'
         + '<p style="margin:0 0 4px;">Ви отримали такі книги'
         + (f' (дата видачі: {escape(issued_at_str)})' if issued_at_str else '') + ':</p>'
-        + _table(['Назва', 'Автор', 'Інв. №', 'Повернути до'], rows)
+        + tables
         + f'<p style="margin:8px 0 0;">Просимо повернути книги до <strong>{escape(return_by)}</strong>. Дякуємо!</p>'
     )
     return _page(inner)

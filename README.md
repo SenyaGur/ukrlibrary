@@ -19,6 +19,16 @@ A web application for a Ukrainian children's lending library. Parents browse the
 - Surrounding whitespace is ignored; an empty or whitespace-only picker query shows the usual unfiltered choices. Inventory numbers use their stored integer spelling: `0012` does not match `12`.
 - The separate inventory fields in Requests, Book Management and Journal retain their existing exact-match behavior. The public catalog and other title-only searches are unchanged.
 
+### Admin issuance and receipts
+
+- Select a reader, then a child and that child's books. **Додати іншу дитину** adds a separate child/list; one **Видати** button processes all lists. Readers without children receive books directly. Each loan still stores its own `child_id`; no schema change.
+- Age warnings apply to each selected child's books and do not block issuance. A copy already selected for one child cannot be selected again for another.
+- The same dialog shows issued books grouped by child, with clean print and explicit email actions. Email is never sent automatically; it uses the reader's current stored email and the existing SMTP/SES configuration. Without an email, the button is disabled with an explanation. Update the reader's card to change their email.
+- Receipt email accepts `{reader_id, rental_ids}` at `POST /api/rentals/receipt/send`; the server resolves the recipient, child names and loan details from the database and rejects loans not currently issued to that reader.
+- Issuance uses the existing sequential loan API, not an atomic batch. If a request fails, successful loans remain issued and printable; the dialog retains only unprocessed books for continuation. Unavailable copies retain the existing reservation-queue behavior.
+- New-book and **+1** dialogs preserve API rejection details and ask for a free inventory number on duplicates. The **+1** dialog remains open for correction. Duplicate rejection uses the existing backend checks; no UNIQUE index or data migration is added.
+- For local verification, use a temporary synthetic database, disable dotenv loading, and replace `app.mailer.send_email` with a local capture before creating the app. Never exercise these actions against real recipients or SES during development.
+
 ## Tech Stack
 
 | Layer | Technology |

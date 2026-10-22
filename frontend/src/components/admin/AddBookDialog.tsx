@@ -214,6 +214,7 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setErrors({});
 
     try {
       const validatedData = bookSchema.parse(formData);
@@ -361,9 +362,11 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
         });
         setErrors(newErrors);
       } else {
+        const message = error instanceof Error ? error.message : "Не вдалося додати книгу. Спробуйте ще раз.";
+        setErrors({ submit: message });
         toast({
           title: "Помилка",
-          description: "Не вдалося додати книгу. Спробуйте ще раз.",
+          description: message,
           variant: "destructive",
         });
       }
@@ -529,6 +532,7 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
         </DialogHeader>
         <ScrollArea className="max-h-[calc(90vh-120px)] pr-4">
           <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+          {errors.submit && <p role="alert" className="rounded-md border border-destructive p-3 text-sm text-destructive">{errors.submit}</p>}
           <div className="space-y-2">
             <Label htmlFor="title" className="text-base font-semibold">Назва книги *</Label>
             <Input

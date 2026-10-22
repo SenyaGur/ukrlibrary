@@ -11,30 +11,44 @@ rentals_bp = Blueprint('rentals', __name__, url_prefix='/api/rentals')
 @rentals_bp.route('/receipt/send', methods=['POST'])
 @admin_required
 def send_issue_receipt():
-    """Email a receipt for a batch of just-issued books (admin only).
-
-    Body: { reader_id?, email?, reader_name, issued_at?, items: [
-        { title, author, inventory_number, due } ] }.
-    Uses the explicit email, else the reader's stored email.
-    """
+    """Email selected issued loans to their reader's stored address only."""
     from app.mailer import send_email, is_configured
-    from app.email_templates import issue_receipt_html
+    from app.email_templates import issue_receipt_html, due_date, fmt_date, parse_dt
 
     data = request.get_json(silent=True) or {}
-    email = (data.get('email') or '').strip()
-    if not email and data.get('reader_id'):
-        r = query_db('SELECT email FROM readers WHERE id = ?', [data['reader_id']], one=True)
-        email = ((r['email'] if r else '') or '').strip()
+    reader = query_db('SELECT * FROM readers WHERE id = ?', [data.get('reader_id')], one=True)
+    if not reader:
+        return jsonify({'error': 'Читача не знайдено'}), 404
+    email = (reader['email'] or '').strip()
     if not email:
         return jsonify({'error': 'У читача не вказано email'}), 400
+    rental_ids = data.get('rental_ids')
+    if not isinstance(rental_ids, list) or not rental_ids or not all(isinstance(i, str) for i in rental_ids):
+        return jsonify({'error': 'Оберіть видані книги для квитанції'}), 400
+    items = []
+    issued_at = ''
+    for rental_id in dict.fromkeys(rental_ids):
+        rental = query_db(
+            '''SELECT r.*, b.author, b.inventory_number, c.name AS child_name, c.surname AS child_surname
+               FROM rental_requests r JOIN books b ON b.id = r.book_id
+               LEFT JOIN children c ON c.id = r.child_id
+               WHERE r.id = ? AND r.reader_id = ? AND r.status = 'approved' ''',
+            [rental_id, reader['id']], one=True)
+        if not rental:
+            return jsonify({'error': 'Книга не видана цьому читачу. Оновіть список.'}), 400
+        items.append({
+            'title': rental['book_title'], 'author': rental['author'],
+            'inventory_number': rental['inventory_number'],
+            'due': fmt_date(due_date(rental['approved_at'], rental['rental_duration'])),
+            'child_id': rental['child_id'],
+            'child_name': ' '.join(filter(None, [rental['child_name'], rental['child_surname']])) or 'Читач особисто',
+        })
+        if not issued_at:
+            issued_at = fmt_date(parse_dt(rental['approved_at']))
     if not is_configured():
         return jsonify({'error': 'Надсилання email не налаштовано на сервері'}), 503
-
     html = issue_receipt_html(
-        data.get('reader_name', ''),
-        data.get('items') or [],
-        data.get('issued_at', ''),
-    )
+        f"{reader['parent_name']} {reader['parent_surname']}", items, issued_at)
     ok = send_email(email, 'Підтвердження видачі книг — Бібліотека', html)
     if not ok:
         return jsonify({'error': 'Не вдалося надіслати email'}), 502

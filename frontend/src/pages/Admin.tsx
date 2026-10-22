@@ -136,6 +136,8 @@ const Admin = () => {
   const [duplicateBookId, setDuplicateBookId] = useState<string | null>(null);
   const [duplicateInvNumber, setDuplicateInvNumber] = useState("");
   const [duplicateSupplier, setDuplicateSupplier] = useState("");
+  const [duplicateError, setDuplicateError] = useState("");
+  const [addingCopy, setAddingCopy] = useState(false);
   const [deleteCopies, setDeleteCopies] = useState<Book[] | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -596,19 +598,24 @@ const Admin = () => {
     setDuplicateBookId(bookId);
     setDuplicateInvNumber("");
     setDuplicateSupplier("");
+    setDuplicateError("");
   };
 
   const confirmAddCopy = async () => {
     if (!duplicateBookId) return;
+    setAddingCopy(true);
+    setDuplicateError("");
     try {
       const invNum = duplicateInvNumber.trim() ? parseInt(duplicateInvNumber) : null;
       await booksApi.duplicate(duplicateBookId, invNum, duplicateSupplier || null);
       toast({ title: "Примірник додано" });
       fetchBooks();
-    } catch (e) {
-      toast({ title: "Помилка", description: "Не вдалося додати примірник", variant: "destructive" });
+      setDuplicateBookId(null);
+    } catch (error) {
+      setDuplicateError(error instanceof Error ? error.message : "Не вдалося додати примірник. Спробуйте ще раз.");
+    } finally {
+      setAddingCopy(false);
     }
-    setDuplicateBookId(null);
   };
 
   const handleRemoveCopy = (copies: Book[]) => {
@@ -1721,9 +1728,10 @@ const Admin = () => {
             type="number"
             placeholder="Інвентарний номер"
             value={duplicateInvNumber}
-            onChange={(e) => setDuplicateInvNumber(e.target.value)}
+            onChange={(e) => { setDuplicateInvNumber(e.target.value); setDuplicateError(""); }}
             autoFocus
           />
+          {duplicateError && <p role="alert" className="text-sm text-destructive">{duplicateError}</p>}
           <Input
             placeholder="Даритель (необов'язково)"
             value={duplicateSupplier}
@@ -1732,7 +1740,7 @@ const Admin = () => {
           />
           <AlertDialogFooter>
             <AlertDialogCancel>Скасувати</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmAddCopy}>Додати</AlertDialogAction>
+            <Button type="button" disabled={addingCopy} onClick={confirmAddCopy}>{addingCopy ? "Додавання..." : "Додати"}</Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
