@@ -47,6 +47,7 @@ const AdminCreateRentalDialog = ({
   const [email, setEmail] = useState("");
   const [duration, setDuration] = useState("4");
   const [bookPopoverOpen, setBookPopoverOpen] = useState(false);
+  const [bookSearch, setBookSearch] = useState("");
   const [readerPopoverOpen, setReaderPopoverOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [receipt, setReceipt] = useState<IssueReceipt | null>(null);
@@ -58,13 +59,21 @@ const AdminCreateRentalDialog = ({
     : null;
 
   const readerChildren = selectedReader?.children || [];
+  const normalizedBookSearch = bookSearch.trim().toLowerCase();
+  const isInventorySearch = /^\d+$/.test(normalizedBookSearch);
 
-  // Group books by title+author, collect all copies
+  // Group title/author searches; inventory searches keep each matching copy selectable.
   const groupedBooks = (() => {
     const groups = new Map<string, { book: Book; copies: Book[]; available: boolean }>();
     for (const book of books) {
       if (selectedBookIds.includes(book.id)) continue;
-      const key = `${book.title}|||${book.author}`;
+      // Filter individual copies before grouping so an exact match cannot select a sibling copy.
+      if (isInventorySearch) {
+        if (book.inventory_number?.toString() !== normalizedBookSearch) continue;
+      } else if (!`${book.title} ${book.author}`.toLowerCase().includes(normalizedBookSearch)) {
+        continue;
+      }
+      const key = isInventorySearch ? book.id : `${book.title}|||${book.author}`;
       const existing = groups.get(key);
       if (existing) {
         existing.copies.push(book);
@@ -77,7 +86,7 @@ const AdminCreateRentalDialog = ({
     return Array.from(groups.values());
   })();
 
-  // Substring filter for cmdk
+  // Reader names continue to use substring matching.
   const substringFilter = (value: string, search: string) => {
     if (value.toLowerCase().includes(search.toLowerCase())) return 1;
     return 0;
@@ -101,6 +110,7 @@ const AdminCreateRentalDialog = ({
   const resetForm = () => {
     setSelectedBookIds([]);
     setSelectedReaderId("");
+    setBookSearch("");
     setSelectedChildId("");
     setManualName("");
     setManualPhone("");
@@ -408,7 +418,11 @@ const AdminCreateRentalDialog = ({
           {/* Book combobox */}
           <div className="space-y-2">
             <Label>Книги</Label>
-            <Popover open={bookPopoverOpen} onOpenChange={setBookPopoverOpen} modal={true}>
+            <p className="text-xs text-muted-foreground">Лише цифри — точний інвентарний номер.</p>
+            <Popover open={bookPopoverOpen} onOpenChange={(open) => {
+              setBookPopoverOpen(open);
+              if (!open) setBookSearch("");
+            }} modal={true}>
               <PopoverTrigger asChild>
                 <Button
                   variant="outline"
@@ -420,8 +434,8 @@ const AdminCreateRentalDialog = ({
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-[450px] p-0 pointer-events-auto" align="start">
-                <Command filter={substringFilter}>
-                  <CommandInput placeholder="Пошук за назвою, автором або інв. номером..." />
+                <Command shouldFilter={false}>
+                  <CommandInput placeholder="Пошук за назвою, автором або інв. номером..." value={bookSearch} onValueChange={setBookSearch} />
                   <CommandList className="max-h-[250px]">
                     <CommandEmpty>Книг не знайдено</CommandEmpty>
                     <CommandGroup>
@@ -431,7 +445,7 @@ const AdminCreateRentalDialog = ({
                           return (
                             <CommandItem
                               key={book.id}
-                              value={`${book.title} ${book.author} ${book.inventory_number || ""}`}
+                              value={book.id}
                               onSelect={() => {
                                 setSelectedBookIds(prev => [...prev, book.id]);
                               }}
@@ -448,7 +462,7 @@ const AdminCreateRentalDialog = ({
                         return availableCopies.length > 0 ? availableCopies.map(copy => (
                           <CommandItem
                             key={copy.id}
-                            value={`${copy.title} ${copy.author} ${copy.inventory_number || ""}`}
+                            value={copy.id}
                             onSelect={() => {
                               setSelectedBookIds(prev => [...prev, copy.id]);
                             }}
@@ -462,7 +476,7 @@ const AdminCreateRentalDialog = ({
                         )) : (
                           <CommandItem
                             key={book.id}
-                            value={`${book.title} ${book.author} ${book.inventory_number || ""}`}
+                            value={book.id}
                             onSelect={() => {
                               setSelectedBookIds(prev => [...prev, book.id]);
                             }}

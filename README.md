@@ -12,6 +12,13 @@ A web application for a Ukrainian children's lending library. Parents browse the
 - **Authentication** — JWT-based auth with role separation (admin / user), bcrypt password hashing
 - **Responsive UI** — works on desktop and mobile; light/dark mode support
 
+### Admin inventory search
+
+- In the book picker for issuing loans, a digits-only query matches the **entire inventory number**: `12` never matches `123` or `112`. All copies with that exact number are returned, including unavailable copies; already-selected copies are excluded.
+- Numeric queries do not fall back to title or author search when no inventory number matches. Other text uses case-insensitive title/author substring matching (for example, `12 adventures` searches the title).
+- Surrounding whitespace is ignored; an empty or whitespace-only picker query shows the usual unfiltered choices. Inventory numbers use their stored integer spelling: `0012` does not match `12`.
+- The separate inventory fields in Requests, Book Management and Journal retain their existing exact-match behavior. The public catalog and other title-only searches are unchanged.
+
 ## Tech Stack
 
 | Layer | Technology |
