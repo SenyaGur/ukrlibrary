@@ -42,6 +42,7 @@ interface AddBookDialogProps {
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
   onArchive?: (bookId: string) => Promise<void>;
+  onArchiveCopy?: (copyId: string) => void;
   book?: Book | null;
   copies?: Book[];
   allInventoryNumbers?: Map<number, string>; // inv_number -> book_id
@@ -83,7 +84,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle
 } from "@/components/ui/alert-dialog";
 
-const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies = EMPTY_COPIES, allInventoryNumbers = EMPTY_INVENTORY_NUMBERS, initialData = null }: AddBookDialogProps) => {
+const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, onArchiveCopy, book, copies = EMPTY_COPIES, allInventoryNumbers = EMPTY_INVENTORY_NUMBERS, initialData = null }: AddBookDialogProps) => {
   const [archiveError, setArchiveError] = useState("");
   const [archiving, setArchiving] = useState(false);
   const [formData, setFormData] = useState({
@@ -778,6 +779,13 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
                 />
                 {dup && <p className="text-xs text-destructive">Дублікат</p>}
                 {errors.inventoryNumber && <p role="alert" className="text-sm text-destructive">{errors.inventoryNumber}</p>}
+                {book && onArchiveCopy && (
+                  <Button type="button" variant="outline" size="sm" disabled={!book.available}
+                    title={!book.available ? "Примірник видано — архівування неможливе" : undefined}
+                    onClick={() => onArchiveCopy(book.id)}>
+                    Архівувати цей примірник
+                  </Button>
+                )}
                 {!book && inventorySuggestion !== null && (
                   <div className="flex flex-wrap items-center gap-2 text-sm" aria-live="polite">
                     <span>Вільний номер: <strong>{inventorySuggestion}</strong></span>
@@ -816,6 +824,7 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
             return (
             <div className="space-y-2 border rounded-lg p-3 bg-muted/30">
               <Label className="text-sm font-semibold">Примірники ({copies.length})</Label>
+              {onArchiveCopy && <p className="text-xs text-muted-foreground">Архівуйте окремий примірник за його збереженим інвентарним номером. Видана книга, активний запит або черга блокують архівування; інші примірники залишаться активними.</p>}
               <datalist id="copy-donors-list">
                 {suppliers.map((s) => (
                   <option key={s} value={s} />
@@ -858,6 +867,13 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
                         setCopySuppliers(prev => ({ ...prev, [copy.id]: e.target.value }));
                       }}
                     />
+                    {onArchiveCopy && (
+                      <Button type="button" variant="outline" size="sm" disabled={!copy.available}
+                        title={!copy.available ? "Примірник видано — архівування неможливе" : undefined}
+                        onClick={() => onArchiveCopy(copy.id)}>
+                        Архівувати цей примірник
+                      </Button>
+                    )}
                   </div>
                   );
                 })}

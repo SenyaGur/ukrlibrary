@@ -683,6 +683,10 @@ const Admin = () => {
       await booksApi.archive(archiveCopyId);
       toast({ title: "Примірник переміщено в архів" });
       setDeleteCopies(null);
+      if (isAddBookOpen) {
+        handleCloseDialog(false);
+        setEditingBookCopies([]);
+      }
       fetchBooks();
     } catch (e) {
       setArchiveError(e instanceof Error ? e.message : "Не вдалося архівувати примірник");
@@ -1344,7 +1348,7 @@ const Admin = () => {
                             ) : null}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-start justify-between gap-4">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                               <div className="flex-1 min-w-0">
                                 <h3 className="font-semibold text-lg truncate">{book.title}</h3>
                                 <p className="text-sm text-muted-foreground">{book.author}</p>
@@ -1360,20 +1364,21 @@ const Admin = () => {
                                   )}
                                 </div>
                               </div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                                 {archiveMode ? (
                                   <Button variant="outline" onClick={() => handleRestoreBook(book.id, 'title')}>Відновити всі примірники</Button>
                                 ) : (
                                 <>
-                                <div className="flex items-center gap-1">
+                                <div className="flex flex-wrap items-center gap-1">
                                   <Button
                                     variant="outline"
-                                    size="icon"
-                                    className="h-8 w-8"
+                                    size="sm"
+                                    className="gap-2"
                                     onClick={() => handleRemoveCopy(copies)}
                                     title="Архівувати примірник"
                                   >
                                     <Minus className="w-4 h-4" />
+                                    Архівувати примірник
                                   </Button>
                                   <span className="text-sm font-medium w-6 text-center">{total}</span>
                                   <Button
@@ -1838,6 +1843,10 @@ const Admin = () => {
         onOpenChange={(open) => { handleCloseDialog(open); if (!open) setEditingBookCopies([]); }}
         onSuccess={fetchBooks}
         onArchive={handleArchiveBook}
+        onArchiveCopy={(copyId) => {
+          const copy = editingBookCopies.find(copy => copy.id === copyId) ?? editingBook;
+          if (copy?.id === copyId) handleRemoveCopy([copy]);
+        }}
         book={editingBook}
         copies={editingBookCopies}
         initialData={importPrefill ? {
