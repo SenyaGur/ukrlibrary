@@ -1,10 +1,95 @@
 import uuid
+from contextlib import contextmanager
 from flask import Blueprint, request, jsonify
 
 from app.auth import admin_required
 from app.database import get_db, query_db
 
 books_bp = Blueprint('books', __name__, url_prefix='/api/books')
+
+SQLITE_MAX_INTEGER = (1 << 63) - 1
+INVENTORY_NUMBER_ERROR = (
+    'Інвентарний номер має бути додатним цілим числом '
+    f'від 1 до {SQLITE_MAX_INTEGER}.'
+)
+
+
+def _valid_inventory_number(value):
+    return type(value) is int and 1 <= value <= SQLITE_MAX_INTEGER
+
+
+def _smallest_free_inventory_numbers(db, count):
+    """Return advisory, ascending gaps, ignoring legacy nonpositive/null values."""
+    numbers = []
+    candidate = 1
+    cursor = db.execute(
+        '''SELECT DISTINCT inventory_number FROM books
+           WHERE inventory_number > 0 AND typeof(inventory_number) = 'integer'
+           ORDER BY inventory_number'''
+    )
+    try:
+        for row in cursor:
+            used = row['inventory_number']
+            while candidate < used and len(numbers) < count:
+                numbers.append(candidate)
+                candidate += 1
+            if len(numbers) == count:
+                return numbers
+            candidate = used + 1
+        while len(numbers) < count:
+            if candidate > SQLITE_MAX_INTEGER:
+                raise OverflowError('Немає вільних інвентарних номерів.')
+            numbers.append(candidate)
+            candidate += 1
+        return numbers
+    finally:
+        cursor.close()
+
+
+def _inventory_conflict(db, count=1, conflicts=None):
+    suggestions = _smallest_free_inventory_numbers(db, count)
+    payload = {
+        'error': 'Інвентарний номер вже зайнятий або повторюється у запиті. '
+                 'Оберіть вільний номер і повторіть збереження.',
+        'code': 'inventory_conflict',
+        'next_inventory_number': suggestions[0],
+        'suggested_inventory_numbers': suggestions,
+    }
+    if conflicts is not None:
+        payload['conflicts'] = conflicts
+    return jsonify(payload), 409
+
+
+@contextmanager
+def _inventory_transaction(db):
+    """Lock before checking; callers commit only after every write succeeds."""
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        yield
+    finally:
+        if db.in_transaction:
+            db.rollback()
+
+
+@books_bp.route('/inventory-suggestions', methods=['GET'])
+@admin_required
+def get_inventory_suggestions():
+    """Suggest unreserved smallest free numbers (admin only)."""
+    raw_count = request.args.get('count', '1')
+    try:
+        if not raw_count.isascii() or not raw_count.isdecimal():
+            raise ValueError
+        count = int(raw_count)
+        if count < 1:
+            raise ValueError
+    except ValueError:
+        return jsonify({'error': 'Кількість має бути додатним цілим числом.'}), 400
+
+    suggestions = _smallest_free_inventory_numbers(get_db(), count)
+    return jsonify({
+        'next_inventory_number': suggestions[0],
+        'suggested_inventory_numbers': suggestions,
+    })
 
 
 def _enrich_book(book):
@@ -136,9 +221,9 @@ def get_filters():
 @books_bp.route('', methods=['POST'])
 @admin_required
 def create_book():
-    """Create a new book."""
+    """Create a new book with an explicitly chosen, unused inventory number."""
     data = request.get_json()
-    if not data:
+    if not isinstance(data, dict) or not data:
         return jsonify({'error': 'Request body is required'}), 400
 
     required = ['title', 'author', 'category']
@@ -147,42 +232,45 @@ def create_book():
             return jsonify({'error': f'{field} is required'}), 400
 
     inv_number = data.get('inventory_number')
-    if inv_number is not None:
+    if not _valid_inventory_number(inv_number):
+        return jsonify({'error': INVENTORY_NUMBER_ERROR}), 400
+
+    book_id = str(uuid.uuid4())
+    db = get_db()
+    with _inventory_transaction(db):
         existing = query_db(
             'SELECT id FROM books WHERE inventory_number = ?',
             [inv_number], one=True
         )
         if existing:
-            return jsonify({'error': 'Інвентарний номер вже існує. Вкажіть інший, вільний номер.'}), 400
+            return _inventory_conflict(db)
 
-    book_id = str(uuid.uuid4())
-    db = get_db()
-    db.execute(
-        '''INSERT INTO books (id, title, author, category, category_id, series_id, publisher_id,
-           cover_color, cover_image_url, available, description, age, publication_year, isbn,
-           inventory_number, supplier, new_book)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        [
-            book_id,
-            data['title'],
-            data['author'],
-            data['category'],
-            data.get('category_id'),
-            data.get('series_id'),
-            data.get('publisher_id'),
-            data.get('cover_color', '#4A90E2'),
-            data.get('cover_image_url'),
-            data.get('available', 1),
-            data.get('description'),
-            data.get('age'),
-            data.get('publication_year'),
-            data.get('isbn'),
-            data.get('inventory_number'),
-            data.get('supplier'),
-            data.get('new_book', 0)
-        ]
-    )
-    db.commit()
+        db.execute(
+            '''INSERT INTO books (id, title, author, category, category_id, series_id, publisher_id,
+               cover_color, cover_image_url, available, description, age, publication_year, isbn,
+               inventory_number, supplier, new_book)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            [
+                book_id,
+                data['title'],
+                data['author'],
+                data['category'],
+                data.get('category_id'),
+                data.get('series_id'),
+                data.get('publisher_id'),
+                data.get('cover_color', '#4A90E2'),
+                data.get('cover_image_url'),
+                data.get('available', 1),
+                data.get('description'),
+                data.get('age'),
+                data.get('publication_year'),
+                data.get('isbn'),
+                inv_number,
+                data.get('supplier'),
+                data.get('new_book', 0)
+            ]
+        )
+        db.commit()
 
     book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
     return jsonify(_enrich_book(book)), 201
@@ -191,23 +279,10 @@ def create_book():
 @books_bp.route('/<book_id>', methods=['PUT'])
 @admin_required
 def update_book(book_id):
-    """Update an existing book."""
-    book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
-    if not book:
-        return jsonify({'error': 'Book not found'}), 404
-
+    """Serialize inventory edits with creation, preserving omitted legacy values."""
     data = request.get_json()
-    if not data:
+    if not isinstance(data, dict) or not data:
         return jsonify({'error': 'Request body is required'}), 400
-
-    inv_number = data.get('inventory_number')
-    if inv_number is not None:
-        existing = query_db(
-            'SELECT id FROM books WHERE inventory_number = ? AND id != ?',
-            [inv_number, book_id], one=True
-        )
-        if existing:
-            return jsonify({'error': 'Інвентарний номер вже існує'}), 400
 
     fields = [
         'title', 'author', 'category', 'category_id', 'series_id', 'publisher_id',
@@ -229,11 +304,30 @@ def update_book(book_id):
     args.append(book_id)
 
     db = get_db()
-    db.execute(
-        f'UPDATE books SET {", ".join(set_clauses)} WHERE id = ?',
-        args
-    )
-    db.commit()
+    with _inventory_transaction(db):
+        book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
+        if not book:
+            return jsonify({'error': 'Book not found'}), 404
+
+        if 'inventory_number' in data:
+            inv_number = data['inventory_number']
+            # Full edit forms may echo a legacy null without changing it.
+            unchanged_null = inv_number is None and book['inventory_number'] is None
+            if not unchanged_null:
+                if not _valid_inventory_number(inv_number):
+                    return jsonify({'error': INVENTORY_NUMBER_ERROR}), 400
+                existing = query_db(
+                    'SELECT id FROM books WHERE inventory_number = ? AND id != ?',
+                    [inv_number, book_id], one=True
+                )
+                if existing:
+                    return _inventory_conflict(db)
+
+        db.execute(
+            f'UPDATE books SET {", ".join(set_clauses)} WHERE id = ?',
+            args
+        )
+        db.commit()
 
     updated = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
     return jsonify(_enrich_book(updated))
@@ -266,52 +360,54 @@ def delete_book(book_id):
 @books_bp.route('/<book_id>/duplicate', methods=['POST'])
 @admin_required
 def duplicate_book(book_id):
-    """Create a new copy of a book with the same metadata (admin only).
-    Accepts optional JSON body with inventory_number to override."""
-    book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
-    if not book:
-        return jsonify({'error': 'Book not found'}), 404
+    """Copy metadata using a required, explicitly chosen inventory number."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Request body is required'}), 400
+    inv_number = data.get('inventory_number')
+    if not _valid_inventory_number(inv_number):
+        return jsonify({'error': INVENTORY_NUMBER_ERROR}), 400
 
-    data = request.get_json(silent=True) or {}
-    inv_number = data.get('inventory_number', book['inventory_number'])
-    supplier = data.get('supplier', book['supplier'])
+    new_id = str(uuid.uuid4())
+    db = get_db()
+    with _inventory_transaction(db):
+        book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
+        if not book:
+            return jsonify({'error': 'Book not found'}), 404
 
-    if inv_number is not None:
         existing = query_db(
             'SELECT id FROM books WHERE inventory_number = ?',
             [inv_number], one=True
         )
         if existing:
-            return jsonify({'error': 'Інвентарний номер вже існує. Вкажіть інший, вільний номер.'}), 400
+            return _inventory_conflict(db)
 
-    new_id = str(uuid.uuid4())
-    db = get_db()
-    db.execute(
-        '''INSERT INTO books (id, title, author, category, category_id, series_id, publisher_id,
-           cover_color, cover_image_url, available, description, age, publication_year, isbn,
-           inventory_number, supplier, new_book)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-        [
-            new_id,
-            book['title'],
-            book['author'],
-            book['category'],
-            book['category_id'],
-            book['series_id'],
-            book['publisher_id'],
-            book['cover_color'],
-            book['cover_image_url'],
-            1,  # new copy is always available
-            book['description'],
-            book['age'],
-            book['publication_year'],
-            book['isbn'],
-            inv_number,
-            supplier,
-            book['new_book'],
-        ]
-    )
-    db.commit()
+        db.execute(
+            '''INSERT INTO books (id, title, author, category, category_id, series_id, publisher_id,
+               cover_color, cover_image_url, available, description, age, publication_year, isbn,
+               inventory_number, supplier, new_book)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            [
+                new_id,
+                book['title'],
+                book['author'],
+                book['category'],
+                book['category_id'],
+                book['series_id'],
+                book['publisher_id'],
+                book['cover_color'],
+                book['cover_image_url'],
+                1,  # new copy is always available
+                book['description'],
+                book['age'],
+                book['publication_year'],
+                book['isbn'],
+                inv_number,
+                data.get('supplier', book['supplier']),
+                book['new_book'],
+            ]
+        )
+        db.commit()
 
     new_book = query_db('SELECT * FROM books WHERE id = ?', [new_id], one=True)
     return jsonify(_enrich_book(new_book)), 201
@@ -435,98 +531,133 @@ def delete_book_media(media_id):
 @books_bp.route('/import', methods=['POST'])
 @admin_required
 def import_books():
-    """Import books from Excel data (admin only).
+    """Import {booksData: [...]} with an atomic inventory-conflict preflight.
 
-    Accepts { booksData: [...] } where each item has book fields.
-    For each book, get-or-create category/series/publisher, then insert.
-    Returns { success, failed, errors }.
+    Any used/repeated inventory number rejects the entire request with 409.
+    Otherwise invalid rows are rolled back independently and the response keeps
+    the existing {success, failed, errors} shape.
     """
     data = request.get_json()
-    if not data or 'booksData' not in data:
+    if not isinstance(data, dict) or 'booksData' not in data:
         return jsonify({'error': 'booksData is required'}), 400
 
     books_data = data['booksData']
+    if not isinstance(books_data, list):
+        return jsonify({'error': 'booksData must be an array'}), 400
+
     db = get_db()
     success = 0
     failed = 0
     errors = []
 
-    for idx, book_data in enumerate(books_data):
-        try:
-            title = book_data.get('title', '').strip()
-            author = book_data.get('author', '').strip()
-            category_name = book_data.get('category', '').strip()
+    with _inventory_transaction(db):
+        number_rows = {}
+        for idx, book_data in enumerate(books_data):
+            if not isinstance(book_data, dict):
+                continue
+            inv_number = book_data.get('inventory_number')
+            if _valid_inventory_number(inv_number):
+                number_rows.setdefault(inv_number, []).append(idx + 1)
 
-            if not title or not author or not category_name:
-                raise ValueError('title, author and category are required')
-
-            # Get or create category
-            cat = query_db('SELECT id FROM categories WHERE name = ?', [category_name], one=True)
-            if not cat:
-                cat_id = str(uuid.uuid4())
-                db.execute('INSERT INTO categories (id, name) VALUES (?, ?)', [cat_id, category_name])
-            else:
-                cat_id = cat['id']
-
-            # Get or create series (optional)
-            series_id = None
-            series_name = book_data.get('series', '').strip() if book_data.get('series') else ''
-            if series_name:
-                s = query_db('SELECT id FROM series WHERE name = ?', [series_name], one=True)
-                if not s:
-                    series_id = str(uuid.uuid4())
-                    db.execute('INSERT INTO series (id, name) VALUES (?, ?)', [series_id, series_name])
-                else:
-                    series_id = s['id']
-
-            # Get or create publisher (optional)
-            publisher_id = None
-            publisher_name = book_data.get('publisher', '').strip() if book_data.get('publisher') else ''
-            if publisher_name:
-                p = query_db('SELECT id FROM publishers WHERE name = ?', [publisher_name], one=True)
-                if not p:
-                    publisher_id = str(uuid.uuid4())
-                    publisher_city = book_data.get('publisher_city', '').strip() if book_data.get('publisher_city') else ''
-                    db.execute(
-                        'INSERT INTO publishers (id, name, city) VALUES (?, ?, ?)',
-                        [publisher_id, publisher_name, publisher_city]
-                    )
-                else:
-                    publisher_id = p['id']
-
-            book_id = str(uuid.uuid4())
-            db.execute(
-                '''INSERT INTO books (id, title, author, category, category_id, series_id, publisher_id,
-                   cover_color, cover_image_url, available, description, age, publication_year, isbn,
-                   inventory_number, supplier, new_book)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                [
-                    book_id,
-                    title,
-                    author,
-                    category_name,
-                    cat_id,
-                    series_id,
-                    publisher_id,
-                    book_data.get('cover_color', '#4A90E2'),
-                    book_data.get('cover_image_url'),
-                    book_data.get('available', 1),
-                    book_data.get('description'),
-                    book_data.get('age'),
-                    book_data.get('publication_year'),
-                    book_data.get('isbn'),
-                    book_data.get('inventory_number'),
-                    book_data.get('supplier'),
-                    book_data.get('new_book', 0)
-                ]
+        conflicts = []
+        for inv_number, rows in number_rows.items():
+            existing = query_db(
+                'SELECT id FROM books WHERE inventory_number = ?',
+                [inv_number], one=True
             )
-            success += 1
+            if existing or len(rows) > 1:
+                conflicts.extend(
+                    {'row': row, 'inventory_number': inv_number} for row in rows
+                )
+        if conflicts:
+            conflicts.sort(key=lambda conflict: conflict['row'])
+            return _inventory_conflict(db, len(books_data), conflicts)
 
-        except Exception as e:
-            failed += 1
-            errors.append(f'Row {idx + 1}: {str(e)}')
+        for idx, book_data in enumerate(books_data):
+            db.execute('SAVEPOINT import_row')
+            try:
+                if not isinstance(book_data, dict):
+                    raise ValueError('Book row must be an object')
+                inv_number = book_data.get('inventory_number')
+                if not _valid_inventory_number(inv_number):
+                    raise ValueError(INVENTORY_NUMBER_ERROR)
 
-    db.commit()
+                title = book_data.get('title', '').strip()
+                author = book_data.get('author', '').strip()
+                category_name = book_data.get('category', '').strip()
+                if not title or not author or not category_name:
+                    raise ValueError('title, author and category are required')
+
+                # Get or create category
+                cat = query_db('SELECT id FROM categories WHERE name = ?', [category_name], one=True)
+                if not cat:
+                    cat_id = str(uuid.uuid4())
+                    db.execute('INSERT INTO categories (id, name) VALUES (?, ?)', [cat_id, category_name])
+                else:
+                    cat_id = cat['id']
+
+                # Get or create series (optional)
+                series_id = None
+                series_name = book_data.get('series', '').strip() if book_data.get('series') else ''
+                if series_name:
+                    s = query_db('SELECT id FROM series WHERE name = ?', [series_name], one=True)
+                    if not s:
+                        series_id = str(uuid.uuid4())
+                        db.execute('INSERT INTO series (id, name) VALUES (?, ?)', [series_id, series_name])
+                    else:
+                        series_id = s['id']
+
+                # Get or create publisher (optional)
+                publisher_id = None
+                publisher_name = book_data.get('publisher', '').strip() if book_data.get('publisher') else ''
+                if publisher_name:
+                    p = query_db('SELECT id FROM publishers WHERE name = ?', [publisher_name], one=True)
+                    if not p:
+                        publisher_id = str(uuid.uuid4())
+                        publisher_city = book_data.get('publisher_city', '').strip() if book_data.get('publisher_city') else ''
+                        db.execute(
+                            'INSERT INTO publishers (id, name, city) VALUES (?, ?, ?)',
+                            [publisher_id, publisher_name, publisher_city]
+                        )
+                    else:
+                        publisher_id = p['id']
+
+                book_id = str(uuid.uuid4())
+                db.execute(
+                    '''INSERT INTO books (id, title, author, category, category_id, series_id, publisher_id,
+                       cover_color, cover_image_url, available, description, age, publication_year, isbn,
+                       inventory_number, supplier, new_book)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    [
+                        book_id,
+                        title,
+                        author,
+                        category_name,
+                        cat_id,
+                        series_id,
+                        publisher_id,
+                        book_data.get('cover_color', '#4A90E2'),
+                        book_data.get('cover_image_url'),
+                        book_data.get('available', 1),
+                        book_data.get('description'),
+                        book_data.get('age'),
+                        book_data.get('publication_year'),
+                        book_data.get('isbn'),
+                        inv_number,
+                        book_data.get('supplier'),
+                        book_data.get('new_book', 0)
+                    ]
+                )
+            except Exception as e:
+                db.execute('ROLLBACK TO SAVEPOINT import_row')
+                db.execute('RELEASE SAVEPOINT import_row')
+                failed += 1
+                errors.append(f'Row {idx + 1}: {str(e)}')
+            else:
+                db.execute('RELEASE SAVEPOINT import_row')
+                success += 1
+
+        db.commit()
 
     return jsonify({
         'success': success,

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { authApi, booksApi, rentalsApi, usersApi, categoriesApi, seriesApi, publishersApi, readersApi, getToken, setToken, resolveUrl } from "@/lib/api";
+import { authApi, booksApi, rentalsApi, usersApi, categoriesApi, seriesApi, publishersApi, readersApi, getToken, setToken, resolveUrl, isInventoryConflict } from "@/lib/api";
 import type { RentalRequest, Book, UserProfile, Category, Series, Publisher, ReaderWithChildren, Child } from "@/lib/api-types";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -137,6 +137,10 @@ const Admin = () => {
   const [duplicateInvNumber, setDuplicateInvNumber] = useState("");
   const [duplicateSupplier, setDuplicateSupplier] = useState("");
   const [duplicateError, setDuplicateError] = useState("");
+  const [duplicateSuggestion, setDuplicateSuggestion] = useState<number | null>(null);
+  const duplicateInventoryTouchedRef = useRef(false);
+  const duplicateSessionRef = useRef(0);
+  const duplicateSuggestionRequestRef = useRef(0);
   const [addingCopy, setAddingCopy] = useState(false);
   const [deleteCopies, setDeleteCopies] = useState<Book[] | null>(null);
   const navigate = useNavigate();
@@ -594,7 +598,29 @@ const Admin = () => {
     return Array.from(groups.values());
   })();
 
+  useEffect(() => {
+    const session = ++duplicateSessionRef.current;
+    const request = ++duplicateSuggestionRequestRef.current;
+    if (!duplicateBookId) return;
+
+    booksApi.inventorySuggestions().then(data => {
+      if (duplicateSessionRef.current !== session || duplicateSuggestionRequestRef.current !== request) return;
+      setDuplicateSuggestion(data.next_inventory_number);
+      setDuplicateInvNumber(prev => duplicateInventoryTouchedRef.current || prev.trim()
+        ? prev
+        : String(data.next_inventory_number));
+    }).catch(() => {
+      if (duplicateSessionRef.current !== session || duplicateSuggestionRequestRef.current !== request) return;
+      setDuplicateError("Не вдалося отримати вільний номер. Введіть його вручну.");
+    });
+
+    return () => { duplicateSessionRef.current++; };
+  }, [duplicateBookId]);
+
   const handleAddCopy = (bookId: string) => {
+    duplicateInventoryTouchedRef.current = false;
+    setDuplicateSuggestion(null);
+    setAddingCopy(false);
     setDuplicateBookId(bookId);
     setDuplicateInvNumber("");
     setDuplicateSupplier("");
@@ -603,18 +629,32 @@ const Admin = () => {
 
   const confirmAddCopy = async () => {
     if (!duplicateBookId) return;
+    const invNum = Number(duplicateInvNumber);
+    if (!/^\d+$/.test(duplicateInvNumber) || !Number.isSafeInteger(invNum) || invNum <= 0) {
+      setDuplicateError("Інвентарний номер має бути додатним цілим числом не більшим за 9007199254740991.");
+      return;
+    }
+    const session = duplicateSessionRef.current;
+    duplicateSuggestionRequestRef.current++;
     setAddingCopy(true);
     setDuplicateError("");
     try {
-      const invNum = duplicateInvNumber.trim() ? parseInt(duplicateInvNumber) : null;
       await booksApi.duplicate(duplicateBookId, invNum, duplicateSupplier || null);
+      if (duplicateSessionRef.current !== session) {
+        fetchBooks();
+        return;
+      }
       toast({ title: "Примірник додано" });
       fetchBooks();
       setDuplicateBookId(null);
     } catch (error) {
+      if (duplicateSessionRef.current !== session) return;
+      if (isInventoryConflict(error)) {
+        setDuplicateSuggestion(error.payload.next_inventory_number);
+      }
       setDuplicateError(error instanceof Error ? error.message : "Не вдалося додати примірник. Спробуйте ще раз.");
     } finally {
-      setAddingCopy(false);
+      if (duplicateSessionRef.current === session) setAddingCopy(false);
     }
   };
 
@@ -1721,16 +1761,32 @@ const Admin = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Додати примірник</AlertDialogTitle>
             <AlertDialogDescription>
-              Вкажіть інвентарний номер для нового примірника (або залиште порожнім)
+              Вкажіть додатний цілий інвентарний номер для нового примірника. Запропонований номер можна змінити; він не зарезервований до збереження.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <Input
+            id="duplicateInventoryNumber"
+            aria-label="Інвентарний номер примірника"
             type="number"
+            min={1}
+            max={Number.MAX_SAFE_INTEGER}
+            step={1}
+            required
             placeholder="Інвентарний номер"
             value={duplicateInvNumber}
-            onChange={(e) => { setDuplicateInvNumber(e.target.value); setDuplicateError(""); }}
+            onChange={(e) => { duplicateInventoryTouchedRef.current = true; setDuplicateInvNumber(e.target.value); setDuplicateError(""); }}
             autoFocus
           />
+          {duplicateSuggestion !== null && (
+            <div className="flex flex-wrap items-center gap-2 text-sm" aria-live="polite">
+              <span>Вільний номер: <strong>{duplicateSuggestion}</strong></span>
+              <Button type="button" variant="outline" size="sm" onClick={() => {
+                duplicateInventoryTouchedRef.current = true;
+                setDuplicateInvNumber(String(duplicateSuggestion));
+                setDuplicateError("");
+              }}>Застосувати номер</Button>
+            </div>
+          )}
           {duplicateError && <p role="alert" className="text-sm text-destructive">{duplicateError}</p>}
           <Input
             placeholder="Даритель (необов'язково)"

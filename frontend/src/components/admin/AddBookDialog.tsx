@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useToast } from "@/hooks/use-toast";
-import { categoriesApi, publishersApi, seriesApi, booksApi, uploadApi, resolveUrl, readersApi } from "@/lib/api";
+import { categoriesApi, publishersApi, seriesApi, booksApi, uploadApi, resolveUrl, readersApi, isInventoryConflict } from "@/lib/api";
 import { z } from "zod";
 import { Upload, X, Image as ImageIcon, Video, Plus, Check, ChevronsUpDown, ChevronUp, ChevronDown, Trash2, Camera } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -68,12 +68,22 @@ const bookSchema = z.object({
   coverColor: z.string().regex(/^#[0-9A-F]{6}$/i, "Невірний формат кольору (використовуйте #RRGGBB)"),
 });
 
+const newBookSchema = bookSchema.extend({
+  inventoryNumber: z.string().refine(
+    value => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0,
+    "Інвентарний номер має бути додатним цілим числом не більшим за 9007199254740991",
+  ),
+});
+
+const EMPTY_COPIES: Book[] = [];
+const EMPTY_INVENTORY_NUMBERS = new Map<number, string>();
+
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle
 } from "@/components/ui/alert-dialog";
 
-const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies = [], allInventoryNumbers = new Map(), initialData = null }: AddBookDialogProps) => {
+const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies = EMPTY_COPIES, allInventoryNumbers = EMPTY_INVENTORY_NUMBERS, initialData = null }: AddBookDialogProps) => {
   const [formData, setFormData] = useState({
     title: "",
     author: "",
@@ -111,6 +121,13 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
   const [isCreatingNewPublisher, setIsCreatingNewPublisher] = useState(false);
   const [newPublisherName, setNewPublisherName] = useState("");
   const [newPublisherCity, setNewPublisherCity] = useState("");
+  const [inventorySuggestion, setInventorySuggestion] = useState<number | null>(null);
+  const [inventorySuggestionError, setInventorySuggestionError] = useState("");
+  const inventoryTouchedRef = useRef(false);
+  const dialogSessionRef = useRef(0);
+  const suggestionRequestRef = useRef(0);
+  const formSourceRef = useRef({ book, copies, initialData });
+  formSourceRef.current = { book, copies, initialData };
   const { toast } = useToast();
 
   // Load categories, publishers, and series
@@ -139,85 +156,99 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
     loadData();
   }, []);
 
-  // Update form when book prop changes
+  // Snapshot incoming data only on open or when switching to a different book.
   useEffect(() => {
-    const loadBookData = async () => {
-      if (book) {
-        setFormData({
-          title: book.title,
-          author: book.author,
-          categoryId: book.category_id || "",
-          publisherId: book.publisher_id || "",
-          seriesId: book.series_id || "",
-          coverColor: book.cover_color,
-          supplier: book.supplier || "",
-          isbn: book.isbn || "",
-          inventoryNumber: book.inventory_number?.toString() || "",
-          age: book.age || "",
-          description: book.description || "",
-          publicationYear: book.publication_year || "",
-          newBook: book.new_book || false,
-        });
+    const session = ++dialogSessionRef.current;
+    const suggestionRequest = ++suggestionRequestRef.current;
+    if (!open) return;
 
-        // Завантажуємо існуючі медіа-файли
-        try {
-          const mediaData = await booksApi.getMedia(book.id);
-          setExistingMedia(mediaData.map(m => ({
-            id: m.id,
-            url: m.file_url,
-            type: m.file_type as 'image' | 'video',
-            display_order: m.display_order
-          })));
-        } catch (error) {
-          console.error("Error loading media:", error);
-        }
-      } else {
-        setFormData({
-          title: initialData?.title || "",
-          author: initialData?.author || "",
-          categoryId: initialData?.categoryId || "",
-          publisherId: initialData?.publisherId || "",
-          seriesId: initialData?.seriesId || "",
-          coverColor: "#4A90E2",
-          supplier: "",
-          isbn: initialData?.isbn || "",
-          inventoryNumber: "",
-          age: initialData?.age || "",
-          description: initialData?.description || "",
-          publicationYear: initialData?.publicationYear || "",
-          newBook: true,
-        });
-        setExistingMedia([]);
-        setPrefilledCover(initialData?.coverImageUrl || null);
-      }
-      setImageFile(null);
-      setMediaFiles([]);
-      setErrors({});
+    const { book, copies, initialData } = formSourceRef.current;
+    inventoryTouchedRef.current = false;
+    setInventorySuggestion(null);
+    setInventorySuggestionError("");
+    setIsSubmitting(false);
+    setImageFile(null);
+    setMediaFiles([]);
+    setExistingMedia([]);
+    setErrors({});
+    setPrefilledCover(book ? null : initialData?.coverImageUrl || null);
 
-      // Initialize copy inventory numbers and suppliers
-      if (copies.length > 0) {
-        const invMap: Record<string, string> = {};
-        copies.forEach(c => { invMap[c.id] = c.inventory_number?.toString() ?? ""; });
-        setCopyInvNumbers(invMap);
-        const supMap: Record<string, string> = {};
-        copies.forEach(c => { supMap[c.id] = c.supplier ?? ""; });
-        setCopySuppliers(supMap);
-      } else {
-        setCopyInvNumbers({});
-        setCopySuppliers({});
-      }
-    };
+    if (book) {
+      setFormData({
+        title: book.title,
+        author: book.author,
+        categoryId: book.category_id || "",
+        publisherId: book.publisher_id || "",
+        seriesId: book.series_id || "",
+        coverColor: book.cover_color,
+        supplier: book.supplier || "",
+        isbn: book.isbn || "",
+        inventoryNumber: book.inventory_number?.toString() || "",
+        age: book.age || "",
+        description: book.description || "",
+        publicationYear: book.publication_year || "",
+        newBook: book.new_book || false,
+      });
+      booksApi.getMedia(book.id).then(mediaData => {
+        if (dialogSessionRef.current !== session) return;
+        setExistingMedia(mediaData.map(m => ({
+          id: m.id,
+          url: m.file_url,
+          type: m.file_type as 'image' | 'video',
+          display_order: m.display_order,
+        })));
+      }).catch(error => {
+        console.error("Error loading media:", error);
+      });
+    } else {
+      setFormData({
+        title: initialData?.title || "",
+        author: initialData?.author || "",
+        categoryId: initialData?.categoryId || "",
+        publisherId: initialData?.publisherId || "",
+        seriesId: initialData?.seriesId || "",
+        coverColor: "#4A90E2",
+        supplier: "",
+        isbn: initialData?.isbn || "",
+        inventoryNumber: "",
+        age: initialData?.age || "",
+        description: initialData?.description || "",
+        publicationYear: initialData?.publicationYear || "",
+        newBook: true,
+      });
+      booksApi.inventorySuggestions().then(data => {
+        if (dialogSessionRef.current !== session || suggestionRequestRef.current !== suggestionRequest) return;
+        setInventorySuggestion(data.next_inventory_number);
+        setFormData(prev => inventoryTouchedRef.current || prev.inventoryNumber.trim()
+          ? prev
+          : { ...prev, inventoryNumber: String(data.next_inventory_number) });
+      }).catch(() => {
+        if (dialogSessionRef.current !== session || suggestionRequestRef.current !== suggestionRequest) return;
+        setInventorySuggestionError("Не вдалося отримати вільний номер. Введіть його вручну.");
+      });
+    }
 
-    loadBookData();
-  }, [book, open, copies]);
+    const invMap: Record<string, string> = {};
+    const supMap: Record<string, string> = {};
+    copies.forEach(copy => {
+      invMap[copy.id] = copy.inventory_number?.toString() ?? "";
+      supMap[copy.id] = copy.supplier ?? "";
+    });
+    setCopyInvNumbers(invMap);
+    setCopySuppliers(supMap);
+
+    return () => { dialogSessionRef.current++; };
+  }, [open, book?.id]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const session = dialogSessionRef.current;
+    suggestionRequestRef.current++;
     setIsSubmitting(true);
     setErrors({});
 
     try {
-      const validatedData = bookSchema.parse(formData);
+      const validatedData = (book ? bookSchema : newBookSchema).parse(formData);
 
       let coverImageUrl: string | null = null;
 
@@ -291,7 +322,7 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
           available: true,
           supplier: formData.supplier || null,
           isbn: formData.isbn || null,
-          inventory_number: formData.inventoryNumber ? parseInt(formData.inventoryNumber) : null,
+          inventory_number: Number(formData.inventoryNumber),
           age: formData.age || null,
           description: formData.description || null,
           publication_year: formData.publicationYear || null,
@@ -321,6 +352,11 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
             }
           }
         }
+      }
+
+      if (dialogSessionRef.current !== session) {
+        onSuccess();
+        return;
       }
 
       toast({
@@ -353,6 +389,11 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
       onOpenChange(false);
       onSuccess();
     } catch (error) {
+      if (dialogSessionRef.current !== session) return;
+      if (isInventoryConflict(error)) {
+        setInventorySuggestion(error.payload.next_inventory_number);
+        setInventorySuggestionError("");
+      }
       if (error instanceof z.ZodError) {
         const newErrors: Record<string, string> = {};
         error.errors.forEach((err) => {
@@ -371,11 +412,12 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
         });
       }
     } finally {
-      setIsSubmitting(false);
+      if (dialogSessionRef.current === session) setIsSubmitting(false);
     }
   };
 
   const handleChange = (field: string, value: string) => {
+    if (field === "inventoryNumber") inventoryTouchedRef.current = true;
     setFormData((prev) => ({ ...prev, [field]: value }));
     if (errors[field]) {
       setErrors((prev) => {
@@ -695,20 +737,36 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
             </div>
 
             {copies.length <= 1 && (() => {
-              const num = formData.inventoryNumber ? parseInt(formData.inventoryNumber) : null;
+              const num = formData.inventoryNumber ? Number(formData.inventoryNumber) : null;
               const dup = num != null && !isNaN(num) && allInventoryNumbers.has(num) && allInventoryNumbers.get(num) !== book?.id;
               return (
               <div className="space-y-2">
-                <Label htmlFor="inventoryNumber">Інвентарний номер</Label>
+                <Label htmlFor="inventoryNumber">Інвентарний номер{!book && " *"}</Label>
                 <Input
                   id="inventoryNumber"
                   type="number"
+                  min={!book ? 1 : undefined}
+                  max={!book ? Number.MAX_SAFE_INTEGER : undefined}
+                  step={1}
+                  required={!book}
+                  aria-invalid={!!errors.inventoryNumber}
                   value={formData.inventoryNumber}
                   onChange={(e) => handleChange("inventoryNumber", e.target.value)}
-                  placeholder="Номер (необов'язково)"
-                  className={dup ? "border-destructive border-2 text-destructive" : ""}
+                  placeholder={book ? "Номер (необов'язково)" : "Інвентарний номер"}
+                  className={dup || errors.inventoryNumber ? "border-destructive border-2 text-destructive" : ""}
                 />
                 {dup && <p className="text-xs text-destructive">Дублікат</p>}
+                {errors.inventoryNumber && <p role="alert" className="text-sm text-destructive">{errors.inventoryNumber}</p>}
+                {!book && inventorySuggestion !== null && (
+                  <div className="flex flex-wrap items-center gap-2 text-sm" aria-live="polite">
+                    <span>Вільний номер: <strong>{inventorySuggestion}</strong></span>
+                    <Button type="button" variant="outline" size="sm" onClick={() => handleChange("inventoryNumber", String(inventorySuggestion))}>
+                      Застосувати номер
+                    </Button>
+                    <p className="w-full text-xs text-muted-foreground">Номер не зарезервовано до збереження.</p>
+                  </div>
+                )}
+                {!book && inventorySuggestionError && <p role="status" className="text-sm text-muted-foreground">{inventorySuggestionError}</p>}
               </div>
               );
             })()}

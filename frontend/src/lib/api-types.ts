@@ -57,6 +57,22 @@ export interface Book {
   } | null;
 }
 
+export interface InventorySuggestions {
+  next_inventory_number: number;
+  suggested_inventory_numbers: number[];
+}
+
+export interface ApiErrorPayload {
+  error?: string;
+  message?: string;
+  code?: string;
+}
+
+export interface InventoryConflictPayload extends ApiErrorPayload, InventorySuggestions {
+  code: 'inventory_conflict';
+  conflicts?: Array<{ row: number; inventory_number: number }>;
+}
+
 export interface BookFilters {
   categories: string[];
   authors: string[];

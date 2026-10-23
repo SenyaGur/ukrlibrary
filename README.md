@@ -26,8 +26,31 @@ A web application for a Ukrainian children's lending library. Parents browse the
 - The same dialog shows issued books grouped by child, with clean print and explicit email actions. Email is never sent automatically; it uses the reader's current stored email and the existing SMTP/SES configuration. Without an email, the button is disabled with an explanation. Update the reader's card to change their email.
 - Receipt email accepts `{reader_id, rental_ids}` at `POST /api/rentals/receipt/send`; the server resolves the recipient, child names and loan details from the database and rejects loans not currently issued to that reader.
 - Issuance uses the existing sequential loan API, not an atomic batch. If a request fails, successful loans remain issued and printable; the dialog retains only unprocessed books for continuation. Unavailable copies retain the existing reservation-queue behavior.
-- New-book and **+1** dialogs preserve API rejection details and ask for a free inventory number on duplicates. The **+1** dialog remains open for correction. Duplicate rejection uses the existing backend checks; no UNIQUE index or data migration is added.
+- New-book and **+1** dialogs prefill the smallest unused positive inventory number on every open. Suggestions are not reservations: another administrator may save the same number first. Users can edit the number.
 - For local verification, use a temporary synthetic database, disable dotenv loading, and replace `app.mailer.send_email` with a local capture before creating the app. Never exercise these actions against real recipients or SES during development.
+
+### Inventory allocation and duplicate audit
+
+- Inventory numbers for new books/copies are required positive integers. `GET /api/books/inventory-suggestions?count=3` (admin-only; positive count, default 1) returns `next_inventory_number` and ascending `suggested_inventory_numbers`. An empty inventory suggests `1`; with `1, 2, 4` used, three suggestions are `3, 5, 6`. Numbers no longer used by any existing copy may be reused.
+- Book creation, **+1**, HTTP bulk import and inventory edits serialize their check-and-write with SQLite `BEGIN IMMEDIATE`. Conflicting saves return HTTP `409`, `code: inventory_conflict`, a Ukrainian error, the current smallest free number and suggested replacements. Bulk conflicts include one-based input row numbers and reject the whole batch without inserting any rows.
+- Dialogs retain the entered number and other form data after a conflict. The refreshed suggestion appears beside the field; **Застосувати номер** applies it explicitly. No automatic replacement or retry. The Excel import component fills missing numbers with ascending free suggestions, excluding numbers already supplied in the file. Its editable preview preserves file data on conflicts and offers **Застосувати запропоновані номери** before a separate import retry; the original spreadsheet is not modified.
+- No schema migration or inventory UNIQUE index is included. Existing duplicates are neither deleted nor renumbered. A production duplicate audit and Senya's approval are required before adding a UNIQUE index. This protection covers application write paths, not direct external SQL writers or the offline seed utility.
+
+For a later approved audit, open an approved SQLite snapshot read-only (`sqlite3 -readonly /path/to/approved-snapshot.sqlite`) and run this SELECT. It reports duplicate non-null numbers and copy IDs without reader or donor information; zero rows means no duplicate non-null inventory numbers in that snapshot.
+
+```sql
+SELECT inventory_number,
+       COUNT(*) AS copy_count,
+       GROUP_CONCAT(id, ', ') AS copy_ids
+FROM books
+WHERE inventory_number IS NOT NULL
+GROUP BY inventory_number
+HAVING COUNT(*) > 1
+ORDER BY inventory_number;
+```
+
+Do not run repairs or create an index as part of the audit. Keep results private. No production audit was performed for this change.
+
 
 ## Tech Stack
 
@@ -139,7 +162,7 @@ python -c "from app.seed import seed_from_excel; seed_from_excel('../your-spread
 | Group | Endpoints |
 |-------|----------|
 | Auth | signup, login, me, reset-password |
-| Books | list, create, update, delete, duplicate, force-available, media, import |
+| Books | list, inventory-suggestions, create, update, delete, duplicate, force-available, media, import |
 | Categories | list, create, update, delete |
 | Series | list, create, update, delete |
 | Publishers | list, create, update, delete |

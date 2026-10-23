@@ -4,7 +4,8 @@ import type {
   Category, Series, Publisher,
   Reader, ReaderWithChildren, Child,
   RentalRequest, RentalHistory, UserProfile, ImportResult,
-  QueueEntry, AuditEntry, BookSearchResult, BookPrefill
+  QueueEntry, AuditEntry, BookSearchResult, BookPrefill,
+  ApiErrorPayload, InventoryConflictPayload, InventorySuggestions
 } from './api-types';
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -30,6 +31,19 @@ export function setToken(newToken: string | null) {
   } else {
     localStorage.removeItem('auth_token');
   }
+}
+
+export class ApiError<T extends ApiErrorPayload = ApiErrorPayload> extends Error {
+  constructor(public readonly status: number, public readonly payload: T) {
+    super(payload.error || payload.message || `HTTP ${status}`);
+    this.name = 'ApiError';
+  }
+}
+
+export function isInventoryConflict(error: unknown): error is ApiError<InventoryConflictPayload> {
+  return error instanceof ApiError
+    && error.status === 409
+    && error.payload.code === 'inventory_conflict';
 }
 
 // Base fetch helper
@@ -59,7 +73,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
       setToken(null);
       window.location.href = '/auth';
     }
-    throw new Error(error.error || error.message || `HTTP ${response.status}`);
+    throw new ApiError(response.status, error);
   }
 
   // Handle empty responses (204)
@@ -90,7 +104,10 @@ export const booksApi = {
 
   filters: () => apiFetch<BookFilters>('/api/books/filters'),
 
-  create: (data: Partial<Book>) =>
+  inventorySuggestions: (count = 1) =>
+    apiFetch<InventorySuggestions>(`/api/books/inventory-suggestions?count=${count}`),
+
+  create: (data: Partial<Book> & { inventory_number: number }) =>
     apiFetch<Book>('/api/books', { method: 'POST', body: JSON.stringify(data) }),
 
   update: (id: string, data: Partial<Book>) =>
@@ -111,10 +128,10 @@ export const booksApi = {
   forceAvailable: (bookId: string) =>
     apiFetch<Book>(`/api/books/${bookId}/force-available`, { method: 'PUT' }),
 
-  duplicate: (bookId: string, inventoryNumber?: number | null, supplier?: string | null) =>
+  duplicate: (bookId: string, inventoryNumber: number, supplier?: string | null) =>
     apiFetch<Book>(`/api/books/${bookId}/duplicate`, {
       method: 'POST',
-      body: JSON.stringify({ inventory_number: inventoryNumber ?? null, supplier: supplier || null }),
+      body: JSON.stringify({ inventory_number: inventoryNumber, supplier: supplier || null }),
     }),
 
   delete: (bookId: string) =>
