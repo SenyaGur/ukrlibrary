@@ -74,6 +74,9 @@ export const ImportBooksFromExcel = () => {
         const rawInventoryNumber = row[1];
         const isMissing = rawInventoryNumber == null || (typeof rawInventoryNumber === "string" && !rawInventoryNumber.trim());
         const inventoryNumber = isMissing ? null : parseInventoryNumber(String(rawInventoryNumber).trim());
+        if (!isMissing && inventoryNumber === null) {
+          throw new Error(`Рядок таблиці ${i + 1}: некоректний інвентарний номер «${String(rawInventoryNumber)}». Виправте його у файлі відповідно до наліпки: потрібне додатне ціле число не більше 9007199254740991. Потім оберіть файл знову.`);
+        }
 
         books.push({
           inventory_number: inventoryNumber,
@@ -107,7 +110,7 @@ export const ImportBooksFromExcel = () => {
           : book);
         setBooksData(withSuggestions);
         if (withSuggestions.some(book => book.inventory_number === null)) {
-          setImportError("Підказки обмежено 1000 номерами. Заповніть решту порожніх або некоректних номерів нижче вручну.");
+          setImportError("Підказки обмежено 1000 номерами. Заповніть решту порожніх номерів нижче вручну.");
         }
       }
     } catch (error: any) {
@@ -211,7 +214,7 @@ export const ImportBooksFromExcel = () => {
       {booksData.length > 0 && (
         <div className="space-y-2">
           <p className="text-sm text-muted-foreground">
-            Порожні та некоректні номери заповнюються вільними номерами за зростанням (до 1000 підказок). Заповніть решту вручну; номери не зарезервовано.
+            Порожні номери заповнюються вільними номерами за зростанням (до 1000 підказок). Заповніть решту вручну; номери не зарезервовано. Некоректні номери у файлі потрібно виправити відповідно до наліпок перед імпортом.
           </p>
           <div className="max-h-64 space-y-2 overflow-y-auto" aria-label="Інвентарні номери для імпорту">
             {booksData.map((book, index) => (
@@ -278,7 +281,7 @@ export const ImportBooksFromExcel = () => {
           {canApplySuggestions && replacements.length < rowsToReplace.length && (
             <p className="text-sm text-muted-foreground">Підказок достатньо для {replacements.length} з {rowsToReplace.length} рядків. Решту номерів заповніть вручну.</p>
           )}
-          {!canApplySuggestions && (
+          {rowsToReplace.length > 0 && replacements.length === 0 && (
             <p role="alert" className="text-sm text-destructive">Немає придатних підказок для поточних конфліктів. Виправте решту номерів вручну або повторіть імпорт після своїх змін.</p>
           )}
         </div>

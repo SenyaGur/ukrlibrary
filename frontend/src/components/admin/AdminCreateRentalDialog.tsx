@@ -134,6 +134,9 @@ const AdminCreateRentalDialog = ({ open, onOpenChange, books, readers, onSuccess
             renter_email: selectedReader?.email || "", rental_duration: weeks,
             reader_id: receiptReaderId || undefined, child_id: group.childId || undefined,
           });
+          if (rental.status === "pending") {
+            throw new Error("Книгу не видано: сервер створив лише запит на оренду. Авторизацію адміністратора не підтверджено. Увійдіть знову та перевірте цей запит у розділі «Запити на оренду» перед повторною видачею.");
+          }
           receiptReaderId = rental.reader_id || receiptReaderId;
           if (rental.status === "approved") {
             issuedItems.push({ rentalId: rental.id, childId: group.childId, childName: childName(group.childId),
