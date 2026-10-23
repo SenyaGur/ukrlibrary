@@ -203,10 +203,18 @@ export const readersApi = {
 };
 
 // Rentals API
+type RentalCreatePayload = {
+  book_id: string; book_title: string; renter_name: string; renter_phone: string;
+  renter_email: string; rental_duration: number; reader_id?: string; child_id?: string;
+};
+
 export const rentalsApi = {
   list: () => apiFetch<RentalRequest[]>('/api/rentals'),
-  create: (data: { book_id: string; book_title: string; renter_name: string; renter_phone: string; renter_email: string; rental_duration: number; reader_id?: string; child_id?: string; auto_approve?: boolean }) =>
+  create: (data: RentalCreatePayload) =>
     apiFetch<RentalRequest>('/api/rentals', { method: 'POST', body: JSON.stringify(data) }),
+  // Uses apiFetch's admin bearer token; public create never requests approval.
+  issue: (data: RentalCreatePayload) =>
+    apiFetch<RentalRequest>('/api/rentals', { method: 'POST', body: JSON.stringify({ ...data, auto_approve: true }) }),
   updateStatus: (id: string, status: 'approved' | 'declined' | 'returned') =>
     apiFetch<RentalRequest>(`/api/rentals/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   getByReader: (readerId: string) =>

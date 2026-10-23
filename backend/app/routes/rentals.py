@@ -15,8 +15,10 @@ def send_issue_receipt():
     from app.mailer import send_email, is_configured
     from app.email_templates import issue_receipt_html, due_date, fmt_date, parse_dt
 
-    data = request.get_json(silent=True) or {}
-    reader = query_db('SELECT * FROM readers WHERE id = ?', [data.get('reader_id')], one=True)
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('reader_id'), str):
+        return jsonify({'error': 'reader_id must be a string in a JSON object'}), 400
+    reader = query_db('SELECT * FROM readers WHERE id = ?', [data['reader_id']], one=True)
     if not reader:
         return jsonify({'error': 'Читача не знайдено'}), 404
     email = (reader['email'] or '').strip()
@@ -182,23 +184,36 @@ def get_rentals():
 
 @rentals_bp.route('', methods=['POST'])
 def create_rental():
-    """Create a new rental request or queue reservation (public endpoint, no auth required)."""
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'Request body is required'}), 400
+    """Public reservations stay pending/queued; only authenticated admins issue."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return jsonify({'error': 'Request body must be a JSON object'}), 400
 
     required = ['book_id', 'book_title', 'renter_name', 'renter_phone', 'rental_duration']
     for field in required:
         if not data.get(field):
             return jsonify({'error': f'{field} is required'}), 400
 
+    if data.get('auto_approve') is True and request.headers.get('Authorization'):
+        return _create_admin_rental(data)
+    # Anonymous flags never grant issuance authority.
+    return _save_rental_request(data, auto_approve=False)
+
+
+@admin_required
+def _create_admin_rental(data):
+    # admin_required verifies the current DB role and sets the audit actor.
+    return _save_rental_request(data, auto_approve=True)
+
+
+def _save_rental_request(data, auto_approve):
     rental_id = str(uuid.uuid4())
     db = get_db()
     with immediate_transaction(db):
-        return _create_rental_request(db, data, rental_id)
+        return _create_rental_request(db, data, rental_id, auto_approve)
 
 
-def _create_rental_request(db, data, rental_id):
+def _create_rental_request(db, data, rental_id, auto_approve):
 
     # Check under the same write lock used by archival.
     book = query_db(
@@ -209,8 +224,6 @@ def _create_rental_request(db, data, rental_id):
     if book['archived_at'] is not None:
         return jsonify({'error': 'Примірник в архіві. Спочатку відновіть його, '
                                  'щоб оформити видачу або бронювання.'}), 409
-
-    auto_approve = data.get('auto_approve', False)
 
     # Auto-match or create reader when reader_id not provided
     reader_id = data.get('reader_id')

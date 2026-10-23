@@ -128,11 +128,11 @@ const AdminCreateRentalDialog = ({ open, onOpenChange, books, readers, onSuccess
         for (const bookId of group.bookIds) {
           const book = books.find(b => b.id === bookId);
           if (!book) throw new Error("Книгу не знайдено. Оновіть список книг.");
-          const rental = await rentalsApi.create({
+          const rental = await rentalsApi.issue({
             book_id: bookId, book_title: book.title, renter_name: renterName,
             renter_phone: selectedReader?.phone1 || manualPhone || "не вказано",
             renter_email: selectedReader?.email || "", rental_duration: weeks,
-            reader_id: receiptReaderId || undefined, child_id: group.childId || undefined, auto_approve: true,
+            reader_id: receiptReaderId || undefined, child_id: group.childId || undefined,
           });
           receiptReaderId = rental.reader_id || receiptReaderId;
           if (rental.status === "approved") {
@@ -172,7 +172,7 @@ const AdminCreateRentalDialog = ({ open, onOpenChange, books, readers, onSuccess
   const handlePrintReceipt = () => {
     if (!receipt) return;
     const tables = receiptGroups.map(g => `<h2>${escapeHtml(g.name)}</h2><table><thead><tr><th>Назва</th><th>Автор</th><th>Інв. №</th><th>Повернути до</th></tr></thead><tbody>${g.items.map(i =>
-      `<tr><td>${escapeHtml(i.title)}</td><td>${escapeHtml(i.author)}</td><td>${i.inventory_number ?? "—"}</td><td>${escapeHtml(i.due)}</td></tr>`).join("")}</tbody></table>`).join("");
+      `<tr><td>${escapeHtml(i.title)}</td><td>${escapeHtml(i.author)}</td><td>${escapeHtml(String(i.inventory_number ?? "—"))}</td><td>${escapeHtml(i.due)}</td></tr>`).join("")}</tbody></table>`).join("");
     try {
       printHtml(`Видача — ${receipt.readerName}`, `<div class="header"><div><h1>Видача книг</h1><div class="muted">${escapeHtml(receipt.readerName)}</div></div><div class="muted">${escapeHtml(receipt.issuedAt)}</div></div>${tables}<div class="footer">Дякуємо, що користуєтесь нашою бібліотекою!</div>`);
     } catch { toast({ title: "Не вдалося відкрити друк", description: "Дозвольте спливаючі вікна у браузері", variant: "destructive" }); }
