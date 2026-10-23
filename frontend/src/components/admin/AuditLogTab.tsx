@@ -19,6 +19,8 @@ const ACTION_LABELS: Record<string, string> = {
   "books.create_book": "Додано книгу",
   "books.update_book": "Оновлено книгу",
   "books.delete_book": "Видалено книгу",
+  "books.archive_book": "Книгу переміщено до архіву",
+  "books.restore_book": "Книгу відновлено з архіву",
   "books.duplicate_book": "Створено примірник",
   "books.add_book_media": "Додано медіа книги",
   "books.delete_book_media": "Видалено медіа книги",

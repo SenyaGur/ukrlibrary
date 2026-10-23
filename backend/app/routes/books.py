@@ -1,9 +1,8 @@
 import uuid
-from contextlib import contextmanager
 from flask import Blueprint, request, jsonify
 
 from app.auth import admin_required
-from app.database import get_db, query_db
+from app.database import get_db, immediate_transaction, query_db
 
 books_bp = Blueprint('books', __name__, url_prefix='/api/books')
 
@@ -60,15 +59,6 @@ def _inventory_conflict(db, count=1, conflicts=None):
     return jsonify(payload), 409
 
 
-@contextmanager
-def _inventory_transaction(db):
-    """Lock before checking; callers commit only after every write succeeds."""
-    try:
-        db.execute('BEGIN IMMEDIATE')
-        yield
-    finally:
-        if db.in_transaction:
-            db.rollback()
 
 
 @books_bp.route('/inventory-suggestions', methods=['GET'])
@@ -148,7 +138,21 @@ def _enrich_book(book):
 
 @books_bp.route('', methods=['GET'])
 def get_books():
-    """Get all books with optional filtering, joined publisher and series data."""
+    """List active books publicly; archived catalog access is admin-only."""
+    archived = request.args.get('archived', 'active')
+    if archived in ('all', 'only'):
+        return _get_archived_books(archived)
+    if archived != 'active':
+        return jsonify({'error': 'Невідомий режим архіву.'}), 400
+    return _list_books(archived)
+
+
+@admin_required
+def _get_archived_books(archived):
+    return _list_books(archived)
+
+
+def _list_books(archived):
     # Auto-clear new_book flag for books older than 2 months
     db = get_db()
     db.execute(
@@ -161,6 +165,10 @@ def get_books():
     available = request.args.get('available')
 
     query = 'SELECT * FROM books WHERE 1=1'
+    if archived == 'active':
+        query += ' AND archived_at IS NULL'
+    elif archived == 'only':
+        query += ' AND archived_at IS NOT NULL'
     args = []
 
     if category:
@@ -190,22 +198,24 @@ def get_books():
 def get_filters():
     """Return unique filter values for the book catalog."""
     categories = [r['category'] for r in query_db(
-        'SELECT DISTINCT category FROM books WHERE category IS NOT NULL AND category != "" ORDER BY category'
+        'SELECT DISTINCT category FROM books WHERE archived_at IS NULL AND category IS NOT NULL AND category != "" ORDER BY category'
     )]
     authors = [r['author'] for r in query_db(
-        'SELECT DISTINCT author FROM books WHERE author IS NOT NULL AND author != "" ORDER BY author'
+        'SELECT DISTINCT author FROM books WHERE archived_at IS NULL AND author IS NOT NULL AND author != "" ORDER BY author'
     )]
     ages = [r['age'] for r in query_db(
-        'SELECT DISTINCT age FROM books WHERE age IS NOT NULL AND age != "" ORDER BY age'
+        'SELECT DISTINCT age FROM books WHERE archived_at IS NULL AND age IS NOT NULL AND age != "" ORDER BY age'
     )]
     publishers = [r['name'] for r in query_db(
-        'SELECT DISTINCT name FROM publishers ORDER BY name'
+        '''SELECT DISTINCT p.name FROM publishers p JOIN books b ON b.publisher_id = p.id
+           WHERE b.archived_at IS NULL ORDER BY p.name'''
     )]
     series_list = [r['name'] for r in query_db(
-        'SELECT DISTINCT name FROM series ORDER BY name'
+        '''SELECT DISTINCT s.name FROM series s JOIN books b ON b.series_id = s.id
+           WHERE b.archived_at IS NULL ORDER BY s.name'''
     )]
     suppliers = [r['supplier'] for r in query_db(
-        'SELECT DISTINCT supplier FROM books WHERE supplier IS NOT NULL AND supplier != "" ORDER BY supplier'
+        'SELECT DISTINCT supplier FROM books WHERE archived_at IS NULL AND supplier IS NOT NULL AND supplier != "" ORDER BY supplier'
     )]
 
     return jsonify({
@@ -237,7 +247,7 @@ def create_book():
 
     book_id = str(uuid.uuid4())
     db = get_db()
-    with _inventory_transaction(db):
+    with immediate_transaction(db):
         existing = query_db(
             'SELECT id FROM books WHERE inventory_number = ?',
             [inv_number], one=True
@@ -304,10 +314,13 @@ def update_book(book_id):
     args.append(book_id)
 
     db = get_db()
-    with _inventory_transaction(db):
+    with immediate_transaction(db):
         book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
         if not book:
             return jsonify({'error': 'Book not found'}), 404
+        if book['archived_at'] is not None:
+            return jsonify({'error': 'Спочатку відновіть примірник з архіву. '
+                                     'Його інвентарний номер залишається зарезервованим.'}), 409
 
         if 'inventory_number' in data:
             inv_number = data['inventory_number']
@@ -335,26 +348,86 @@ def update_book(book_id):
 
 @books_bp.route('/<book_id>', methods=['DELETE'])
 @admin_required
-def delete_book(book_id):
-    """Delete a book (admin only). Refuses if the book has active (approved) rentals."""
-    book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
-    if not book:
-        return jsonify({'error': 'Book not found'}), 404
-
-    active = query_db(
-        "SELECT id FROM rental_requests WHERE book_id = ? AND status IN ('approved', 'pending', 'queued')",
-        [book_id], one=True
-    )
-    if active:
-        return jsonify({'error': 'Cannot delete a book with active rentals'}), 400
-
+def archive_book(book_id):
+    """Archive one copy or all exact title/author copies without deleting history."""
+    scope = request.args.get('scope', 'copy')
+    if scope not in ('copy', 'title'):
+        return jsonify({'error': 'Невідомий обсяг архівування.'}), 400
     db = get_db()
-    db.execute('DELETE FROM book_media WHERE book_id = ?', [book_id])
-    db.execute('DELETE FROM rental_requests WHERE book_id = ?', [book_id])
-    db.execute('DELETE FROM books WHERE id = ?', [book_id])
-    db.commit()
+    with immediate_transaction(db):
+        book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
+        if not book:
+            return jsonify({'error': 'Книгу не знайдено.'}), 404
+        where, args = _book_scope(book, scope)
+        blocking = query_db(
+            f'''SELECT id FROM rental_requests
+                WHERE status IN ('approved', 'pending', 'queued')
+                AND book_id IN (SELECT id FROM books WHERE {where}) LIMIT 1''',
+            args, one=True
+        )
+        if blocking:
+            return jsonify({'error': 'Неможливо архівувати: примірник видано, '
+                                     'очікує схвалення або має чергу бронювань.'}), 409
+        cursor = db.execute(
+            f'''UPDATE books SET archived_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+                WHERE {where} AND archived_at IS NULL''',
+            args
+        )
+        archived_count = cursor.rowcount
+        db.commit()
+    return jsonify({
+        'message': 'Книги архівовано. Історію збережено, інвентарні номери зарезервовано.',
+        'archived_count': archived_count,
+    })
 
-    return jsonify({'message': 'Book deleted successfully'})
+
+def _book_scope(book, scope):
+    if scope == 'title':
+        return 'title = ? AND author = ?', [book['title'], book['author']]
+    return 'id = ?', [book['id']]
+
+
+@books_bp.route('/<book_id>/restore', methods=['POST'])
+@admin_required
+def restore_book(book_id):
+    """Restore atomically, retaining reserved inventory numbers and history."""
+    scope = request.args.get('scope', 'copy')
+    if scope not in ('copy', 'title'):
+        return jsonify({'error': 'Невідомий обсяг відновлення.'}), 400
+    db = get_db()
+    with immediate_transaction(db):
+        book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
+        if not book:
+            return jsonify({'error': 'Книгу не знайдено.'}), 404
+        where, args = _book_scope(book, scope)
+        conflicts = query_db(
+            f'''SELECT DISTINCT inventory_number FROM books
+                WHERE {where} AND archived_at IS NOT NULL
+                AND inventory_number IS NOT NULL
+                AND (SELECT COUNT(*) FROM books other
+                     WHERE other.inventory_number = books.inventory_number) > 1
+                ORDER BY inventory_number''',
+            args
+        )
+        if conflicts:
+            return jsonify({
+                'error': 'Неможливо відновити: інвентарні номери дублюються з іншими '
+                         'примірниками. Усуньте дублікати перед відновленням.',
+                'code': 'inventory_conflict',
+                'inventory_numbers': [row['inventory_number'] for row in conflicts],
+            }), 409
+        cursor = db.execute(
+            f'''UPDATE books SET archived_at = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE {where} AND archived_at IS NOT NULL''',
+            args
+        )
+        restored_count = cursor.rowcount
+        db.commit()
+    return jsonify({
+        'message': 'Книги відновлено з архіву. Історію та інвентарні номери збережено.',
+        'restored_count': restored_count,
+    })
 
 
 @books_bp.route('/<book_id>/duplicate', methods=['POST'])
@@ -370,10 +443,13 @@ def duplicate_book(book_id):
 
     new_id = str(uuid.uuid4())
     db = get_db()
-    with _inventory_transaction(db):
+    with immediate_transaction(db):
         book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
         if not book:
             return jsonify({'error': 'Book not found'}), 404
+        if book['archived_at'] is not None:
+            return jsonify({'error': 'Спочатку відновіть примірник з архіву, '
+                                     'щоб створити його копію.'}), 409
 
         existing = query_db(
             'SELECT id FROM books WHERE inventory_number = ?',
@@ -436,7 +512,9 @@ def force_book_available(book_id):
 @books_bp.route('/<book_id>/media', methods=['GET'])
 def get_book_media(book_id):
     """Get all media for a book (public)."""
-    book = query_db('SELECT id FROM books WHERE id = ?', [book_id], one=True)
+    book = query_db(
+        'SELECT id FROM books WHERE id = ? AND archived_at IS NULL', [book_id], one=True
+    )
     if not book:
         return jsonify({'error': 'Book not found'}), 404
 
@@ -507,7 +585,9 @@ def reorder_book_media(book_id):
 @books_bp.route('/<book_id>/export', methods=['GET'])
 def export_book_data(book_id):
     """Export a single book's data (public)."""
-    book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
+    book = query_db(
+        'SELECT * FROM books WHERE id = ? AND archived_at IS NULL', [book_id], one=True
+    )
     if not book:
         return jsonify({'error': 'Book not found'}), 404
     return jsonify(_enrich_book(book))
@@ -550,7 +630,7 @@ def import_books():
     failed = 0
     errors = []
 
-    with _inventory_transaction(db):
+    with immediate_transaction(db):
         number_rows = {}
         for idx, book_data in enumerate(books_data):
             if not isinstance(book_data, dict):

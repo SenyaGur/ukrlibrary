@@ -31,10 +31,10 @@ A web application for a Ukrainian children's lending library. Parents browse the
 
 ### Inventory allocation and duplicate audit
 
-- Inventory numbers for new books/copies are required positive integers. `GET /api/books/inventory-suggestions?count=3` (admin-only; positive count, default 1) returns `next_inventory_number` and ascending `suggested_inventory_numbers`. An empty inventory suggests `1`; with `1, 2, 4` used, three suggestions are `3, 5, 6`. Numbers no longer used by any existing copy may be reused.
+- Inventory numbers for new books/copies are required positive integers. `GET /api/books/inventory-suggestions?count=3` (admin-only; positive count, default 1) returns `next_inventory_number` and ascending `suggested_inventory_numbers`. An empty inventory suggests `1`; with `1, 2, 4` used, three suggestions are `3, 5, 6`. Archived copies still reserve their numbers: archiving never makes a number available for reuse.
 - Book creation, **+1**, HTTP bulk import and inventory edits serialize their check-and-write with SQLite `BEGIN IMMEDIATE`. Conflicting saves return HTTP `409`, `code: inventory_conflict`, a Ukrainian error, the current smallest free number and suggested replacements. Bulk conflicts include one-based input row numbers and reject the whole batch without inserting any rows.
 - Dialogs retain the entered number and other form data after a conflict. The refreshed suggestion appears beside the field; **Застосувати номер** applies it explicitly. No automatic replacement or retry. The Excel import component fills missing numbers with ascending free suggestions, excluding numbers already supplied in the file. Its editable preview preserves file data on conflicts and offers **Застосувати запропоновані номери** before a separate import retry; the original spreadsheet is not modified.
-- No schema migration or inventory UNIQUE index is included. Existing duplicates are neither deleted nor renumbered. A production duplicate audit and Senya's approval are required before adding a UNIQUE index. This protection covers application write paths, not direct external SQL writers or the offline seed utility.
+- No inventory UNIQUE index is included. Existing duplicates are neither deleted nor renumbered. A production duplicate audit and Senya's approval are required before adding a UNIQUE index. This protection covers application write paths, not direct external SQL writers or the offline seed utility.
 
 For a later approved audit, open an approved SQLite snapshot read-only (`sqlite3 -readonly /path/to/approved-snapshot.sqlite`) and run this SELECT. It reports duplicate non-null numbers and copy IDs without reader or donor information; zero rows means no duplicate non-null inventory numbers in that snapshot.
 
@@ -50,6 +50,15 @@ ORDER BY inventory_number;
 ```
 
 Do not run repairs or create an index as part of the audit. Keep results private. No production audit was performed for this change.
+
+### Book archive and startup migration
+
+- **Архівувати всі примірники** in the book editor archives the entire title (all copies with the same exact title and author). The separate minus-copy action archives only the chosen copy, after confirmation. No book, media or rental-history rows are deleted. Approved, pending or queued loans on any targeted copy block the entire operation.
+- Archived copies disappear from the public catalog, search, filter values, catalog counts, issuance picker and new requests. Journal and reader history keep their titles and loans. In Book Management, switch to **Архів** to see retired titles and inventory numbers; **Відновити** restores a title or an individual copy. Restoration refuses inventory collisions, including pre-existing legacy duplicates, without changing numbers.
+- `books` stores one row per copy; there is no separate title table. Nullable `books.archived_at DATETIME` records retirement. New databases receive this column from `backend/app/schema.sql`; existing databases receive an additive `ALTER TABLE` from `init_db()` at application startup. The migration checks existing columns, serializes concurrent startup migrations, and propagates failures; repeated startup is idempotent. Existing rows stay active (`NULL`), with no history backfill, renumbering or destructive statements.
+- **Production requires Senya's migration/deployment approval and a database backup first.** Take a consistent SQLite backup and verify the restore procedure before starting the updated backend. Do not run seed/import utilities as a migration. This change was verified only against temporary synthetic SQLite databases, including one created with the old `main` schema; no production database was accessed.
+- `GET /api/books` returns active copies only, even for an administrator. `?archived=only` and `?archived=all` require admin authentication. `DELETE /api/books/<id>` now archives one copy; add `?scope=title` for all matching copies. `POST /api/books/<id>/restore` restores one copy; `?scope=title` restores its archived title copies. Archive/restore and inventory writes serialize with SQLite; archived inventory numbers participate in every duplicate check and free-number suggestion.
+
 
 
 ## Tech Stack
@@ -162,7 +171,7 @@ python -c "from app.seed import seed_from_excel; seed_from_excel('../your-spread
 | Group | Endpoints |
 |-------|----------|
 | Auth | signup, login, me, reset-password |
-| Books | list, inventory-suggestions, create, update, delete, duplicate, force-available, media, import |
+| Books | list, inventory-suggestions, create, update, archive (DELETE), restore, duplicate, force-available, media, import |
 | Categories | list, create, update, delete |
 | Series | list, create, update, delete |
 | Publishers | list, create, update, delete |

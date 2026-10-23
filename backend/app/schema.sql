@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS books (
     inventory_number INTEGER,
     supplier TEXT,
     new_book INTEGER DEFAULT 0,
+    archived_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

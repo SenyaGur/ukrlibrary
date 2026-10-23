@@ -41,7 +41,7 @@ interface AddBookDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
-  onDelete?: (bookId: string) => void;
+  onArchive?: (bookId: string) => Promise<void>;
   book?: Book | null;
   copies?: Book[];
   allInventoryNumbers?: Map<number, string>; // inv_number -> book_id
@@ -79,11 +79,13 @@ const EMPTY_COPIES: Book[] = [];
 const EMPTY_INVENTORY_NUMBERS = new Map<number, string>();
 
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialog, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle
 } from "@/components/ui/alert-dialog";
 
-const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies = EMPTY_COPIES, allInventoryNumbers = EMPTY_INVENTORY_NUMBERS, initialData = null }: AddBookDialogProps) => {
+const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies = EMPTY_COPIES, allInventoryNumbers = EMPTY_INVENTORY_NUMBERS, initialData = null }: AddBookDialogProps) => {
+  const [archiveError, setArchiveError] = useState("");
+  const [archiving, setArchiving] = useState(false);
   const [formData, setFormData] = useState({
     title: "",
     author: "",
@@ -528,29 +530,37 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
     setMediaFiles(newMedia);
   };
 
-  const handleDeleteBook = () => {
-    if (book && onDelete) {
-      onDelete(book.id);
+  const handleArchiveBook = async () => {
+    if (!book || !onArchive) return;
+    setArchiving(true);
+    setArchiveError("");
+    try {
+      await onArchive(book.id);
       setShowDeleteConfirm(false);
       onOpenChange(false);
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : "Не вдалося архівувати книгу");
+    } finally {
+      setArchiving(false);
     }
   };
 
   return (
     <>
-    <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+    <AlertDialog open={showDeleteConfirm} onOpenChange={(value) => { if (!archiving) setShowDeleteConfirm(value); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Видалити книгу?</AlertDialogTitle>
+          <AlertDialogTitle>Архівувати всі примірники назви?</AlertDialogTitle>
           <AlertDialogDescription>
-            Ви впевнені, що хочете видалити "{book?.title}"? Цю дію неможливо скасувати.
+            Усі примірники «{book?.title}» автора «{book?.author}», зокрема приховані поточними фільтрами, буде переміщено в архів. Історія читання збережеться, інвентарні номери залишаться зарезервованими. Книги можна відновити з архіву.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {archiveError && <p role="alert" className="text-sm text-destructive">{archiveError}</p>}
         <AlertDialogFooter>
-          <AlertDialogCancel>Скасувати</AlertDialogCancel>
-          <AlertDialogAction onClick={handleDeleteBook} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-            Видалити
-          </AlertDialogAction>
+          <AlertDialogCancel disabled={archiving}>Скасувати</AlertDialogCancel>
+          <Button type="button" disabled={archiving} onClick={handleArchiveBook} variant="destructive">
+            {archiving ? "Архівування..." : "Архівувати всі примірники"}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -1159,16 +1169,16 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onDelete, book, copies =
             </Button>
           </div>
 
-          {book && onDelete && (
+          {book && onArchive && (
             <div className="border-t pt-4 mt-2">
               <Button
                 type="button"
                 variant="destructive"
                 className="w-full gap-2"
-                onClick={() => setShowDeleteConfirm(true)}
+                onClick={() => { setArchiveError(""); setShowDeleteConfirm(true); }}
               >
                 <Trash2 className="w-4 h-4" />
-                Видалити книгу
+                Архівувати всі примірники
               </Button>
             </div>
           )}

@@ -3,7 +3,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 
 from app.auth import admin_required
-from app.database import get_db, query_db
+from app.database import get_db, immediate_transaction, query_db
 
 rentals_bp = Blueprint('rentals', __name__, url_prefix='/api/rentals')
 
@@ -194,11 +194,21 @@ def create_rental():
 
     rental_id = str(uuid.uuid4())
     db = get_db()
+    with immediate_transaction(db):
+        return _create_rental_request(db, data, rental_id)
 
-    # Check book availability
-    book = query_db('SELECT available FROM books WHERE id = ?', [data['book_id']], one=True)
+
+def _create_rental_request(db, data, rental_id):
+
+    # Check under the same write lock used by archival.
+    book = query_db(
+        'SELECT available, archived_at FROM books WHERE id = ?', [data['book_id']], one=True
+    )
     if not book:
         return jsonify({'error': 'Book not found'}), 404
+    if book['archived_at'] is not None:
+        return jsonify({'error': 'Примірник в архіві. Спочатку відновіть його, '
+                                 'щоб оформити видачу або бронювання.'}), 409
 
     auto_approve = data.get('auto_approve', False)
 
@@ -308,6 +318,12 @@ def update_rental_status(rental_id):
 
     Accepts { status: "approved" | "declined" | "returned" }.
     """
+    db = get_db()
+    with immediate_transaction(db):
+        return _update_rental_status(db, rental_id)
+
+
+def _update_rental_status(db, rental_id):
     rental = query_db('SELECT * FROM rental_requests WHERE id = ?', [rental_id], one=True)
     if not rental:
         return jsonify({'error': 'Rental request not found'}), 404
@@ -320,9 +336,16 @@ def update_rental_status(rental_id):
     if new_status not in ('approved', 'declined', 'returned'):
         return jsonify({'error': 'status must be "approved", "declined", or "returned"'}), 400
 
-    db = get_db()
 
     if new_status == 'approved':
+        book = query_db(
+            'SELECT archived_at FROM books WHERE id = ?', [rental['book_id']], one=True
+        )
+        if not book:
+            return jsonify({'error': 'Книгу не знайдено.'}), 404
+        if book['archived_at'] is not None:
+            return jsonify({'error': 'Примірник в архіві. Спочатку відновіть його, '
+                                     'щоб схвалити видачу.'}), 409
         now = datetime.utcnow().isoformat()
         db.execute(
             'UPDATE rental_requests SET status = ?, approved_at = ? WHERE id = ?',

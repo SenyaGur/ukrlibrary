@@ -36,6 +36,7 @@ export interface Book {
   cover_color: string;
   cover_image_url: string | null;
   available: boolean;
+  archived_at: string | null;
   description: string | null;
   age: string | null;
   publication_year: string | null;

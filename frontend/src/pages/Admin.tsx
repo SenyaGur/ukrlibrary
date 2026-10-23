@@ -59,7 +59,10 @@ const Admin = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string>("");
   const [rentalRequests, setRentalRequests] = useState<RentalRequest[]>([]);
-  const [books, setBooks] = useState<Book[]>([]);
+  const [allBooks, setAllBooks] = useState<Book[]>([]);
+  const [archiveMode, setArchiveMode] = useState(false);
+  const books = allBooks.filter(book => !book.archived_at);
+  const visibleBooks = allBooks.filter(book => Boolean(book.archived_at) === archiveMode);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [series, setSeries] = useState<Series[]>([]);
@@ -143,6 +146,9 @@ const Admin = () => {
   const duplicateSuggestionRequestRef = useRef(0);
   const [addingCopy, setAddingCopy] = useState(false);
   const [deleteCopies, setDeleteCopies] = useState<Book[] | null>(null);
+  const [archiveCopyId, setArchiveCopyId] = useState("");
+  const [archiveError, setArchiveError] = useState("");
+  const [archiving, setArchiving] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -217,8 +223,8 @@ const Admin = () => {
 
   const fetchBooks = async () => {
     try {
-      const data = await booksApi.list();
-      setBooks(data || []);
+      const data = await booksApi.list('all');
+      setAllBooks(data || []);
     } catch (error) {
       console.error("Помилка завантаження книг:", error);
       toast({
@@ -479,12 +485,13 @@ const Admin = () => {
     }
   };
 
-  const bookMap = new Map(books.map(b => [b.id, b]));
+  const bookMap = new Map(allBooks.map(b => [b.id, b]));
   const childMap = new Map(readers.flatMap(r => (r.children || []).map(c => [c.id, c])));
   const readerMap = new Map(readers.map(r => [r.id, r]));
 
   const filteredRequests = rentalRequests.filter((request) => {
     const book = bookMap.get(request.book_id);
+    if (book?.archived_at) return false;
     const linkedReader = request.reader_id ? readerMap.get(request.reader_id) : null;
     const readerNameMatch = !!linkedReader && (
       `${linkedReader.parent_name} ${linkedReader.parent_surname}`.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -548,12 +555,12 @@ const Admin = () => {
 
   // Build set of duplicate inventory numbers
   const invCount = new Map<number, number>();
-  books.forEach(b => {
+  allBooks.forEach(b => {
     if (b.inventory_number != null) invCount.set(b.inventory_number, (invCount.get(b.inventory_number) || 0) + 1);
   });
   const duplicateInvNumbers = new Set([...invCount.entries()].filter(([, c]) => c > 1).map(([n]) => n));
 
-  const filteredBooks = books.filter((book) => {
+  const filteredBooks = visibleBooks.filter((book) => {
     const matchesSearch =
       book.title.toLowerCase().includes(bookSearchQuery.toLowerCase()) ||
       book.author.toLowerCase().includes(bookSearchQuery.toLowerCase()) ||
@@ -582,7 +589,7 @@ const Admin = () => {
   const groupedBooks = (() => {
     const groups = new Map<string, { book: Book; copies: Book[]; total: number; available: number }>();
     for (const book of filteredBooks) {
-      const key = `${book.title}|||${book.author}`;
+      const key = JSON.stringify([book.title, book.author]);
       const existing = groups.get(key);
       if (existing) {
         existing.copies.push(book);
@@ -661,27 +668,38 @@ const Admin = () => {
   const handleRemoveCopy = (copies: Book[]) => {
     const availableCopies = copies.filter(b => b.available);
     if (availableCopies.length === 0) {
-      toast({ title: "Помилка", description: "Всі примірники орендовані — видалити неможливо", variant: "destructive" });
+      toast({ title: "Помилка", description: "Усі примірники видані — архівування неможливе", variant: "destructive" });
       return;
     }
-    if (availableCopies.length === 1) {
-      // Only one available copy — delete it directly
-      confirmDeleteCopy(availableCopies[0].id);
-    } else {
-      // Multiple available — let admin choose which one
-      setDeleteCopies(availableCopies);
+    setArchiveError("");
+    setArchiveCopyId(availableCopies.length === 1 ? availableCopies[0].id : "");
+    setDeleteCopies(availableCopies);
+  };
+
+  const confirmArchiveCopy = async () => {
+    if (!archiveCopyId) return;
+    setArchiving(true);
+    setArchiveError("");
+    try {
+      await booksApi.archive(archiveCopyId);
+      toast({ title: "Примірник переміщено в архів" });
+      setDeleteCopies(null);
+      fetchBooks();
+    } catch (e) {
+      setArchiveError(e instanceof Error ? e.message : "Не вдалося архівувати примірник");
+    } finally {
+      setArchiving(false);
     }
   };
 
-  const confirmDeleteCopy = async (bookId: string) => {
+  const handleRestoreBook = async (bookId: string, scope?: 'title') => {
     try {
-      await booksApi.delete(bookId);
-      toast({ title: "Примірник видалено" });
+      await booksApi.restore(bookId, scope);
+      toast({ title: scope ? "Усі примірники назви відновлено" : "Примірник відновлено" });
       fetchBooks();
-    } catch (e: any) {
-      toast({ title: "Помилка", description: e.message || "Не вдалося видалити примірник", variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Помилка відновлення", description: e instanceof Error ? e.message : "Не вдалося відновити книгу", variant: "destructive" });
     }
-    setDeleteCopies(null);
   };
 
   const filteredUsers = users.filter((user) =>
@@ -765,8 +783,8 @@ const Admin = () => {
     });
 
   // Unique values for journal filter dropdowns
-  const journalAuthors = [...new Set(books.map(b => b.author).filter(Boolean))].sort();
-  const journalSeriesNames = [...new Set(books.map(b => b.series?.name).filter(Boolean) as string[])].sort();
+  const journalAuthors = [...new Set(allBooks.map(b => b.author).filter(Boolean))].sort();
+  const journalSeriesNames = [...new Set(allBooks.map(b => b.series?.name).filter(Boolean) as string[])].sort();
   const journalReaders = [...new Set(rentalRequests.filter(r => r.status === "returned").map(r => r.renter_name))].sort();
   const journalBookTitles = [...new Set(rentalRequests.filter(r => r.status === "returned").map(r => r.book_title))].sort();
 
@@ -778,18 +796,14 @@ const Admin = () => {
     setIsAddBookOpen(true);
   };
 
-  const handleDeleteBook = async (bookId: string) => {
-    try {
-      await booksApi.delete(bookId);
-      toast({ title: "Книгу видалено" });
-      fetchBooks();
-    } catch (e: any) {
-      toast({ title: "Помилка", description: e.message || "Не вдалося видалити книгу", variant: "destructive" });
-    }
+  const handleArchiveBook = async (bookId: string) => {
+    await booksApi.archive(bookId, 'title');
+    toast({ title: "Усі примірники назви переміщено в архів" });
+    fetchBooks();
   };
 
   const handleExportBooks = () => {
-    const exportData = books.map((b, idx) => ({
+    const exportData = filteredBooks.map((b, idx) => ({
       '№': idx + 1,
       'Інв. №': b.inventory_number || '',
       'Категорія': b.category,
@@ -808,7 +822,7 @@ const Admin = () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Книги');
     XLSX.writeFile(wb, `бібліотека_книги_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    toast({ title: "Експорт завершено", description: `${books.length} книг експортовано` });
+    toast({ title: "Експорт завершено", description: `${filteredBooks.length} книг експортовано` });
   };
 
   const [availabilityBook, setAvailabilityBook] = useState<Book | null>(null);
@@ -1174,8 +1188,11 @@ const Admin = () => {
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle>Управління книгами ({groupedBooks.length} назв, {books.length} прим.)</CardTitle>
+                  <CardTitle>{archiveMode ? "Архів" : "Управління книгами"} ({groupedBooks.length} назв, {filteredBooks.length} прим.)</CardTitle>
                   <div className="flex gap-2">
+                    <Button variant={archiveMode ? "default" : "outline"} onClick={() => setArchiveMode(mode => !mode)}>
+                      {archiveMode ? "Активні книги" : "Архів"}
+                    </Button>
                     <Button variant="outline" onClick={handleExportBooks} className="gap-2">
                       <FileDown className="w-4 h-4" />
                       Експорт
@@ -1254,7 +1271,7 @@ const Admin = () => {
                       <SearchableSelect
                         value={adminBookAuthor}
                         onValueChange={setAdminBookAuthor}
-                        options={[...new Set(books.map(b => b.author).filter(Boolean))].sort().map(a => ({ value: a, label: a }))}
+                        options={[...new Set(visibleBooks.map(b => b.author).filter(Boolean))].sort().map(a => ({ value: a, label: a }))}
                         placeholder="Автор"
                         searchPlaceholder="Шукати автора..."
                         allLabel="Всі автори"
@@ -1335,9 +1352,9 @@ const Admin = () => {
                                 <div className="flex flex-wrap gap-2 mt-2">
                                   <Badge variant="secondary">{book.category}</Badge>
                                   <Badge variant="outline">
-                                    Примірники: {total} ({available} дост.)
+                                    Примірники: {total}{!archiveMode && ` (${available} дост.)`}
                                   </Badge>
-                                  {available < total && (
+                                  {!archiveMode && available < total && (
                                     <Badge variant="secondary" className="bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200">
                                       {total - available} на руках
                                     </Badge>
@@ -1345,14 +1362,17 @@ const Admin = () => {
                                 </div>
                               </div>
                               <div className="flex items-center gap-2">
+                                {archiveMode ? (
+                                  <Button variant="outline" onClick={() => handleRestoreBook(book.id, 'title')}>Відновити всі примірники</Button>
+                                ) : (
+                                <>
                                 <div className="flex items-center gap-1">
                                   <Button
                                     variant="outline"
                                     size="icon"
                                     className="h-8 w-8"
                                     onClick={() => handleRemoveCopy(copies)}
-                                    disabled={total <= 1}
-                                    title="Видалити примірник"
+                                    title="Архівувати примірник"
                                   >
                                     <Minus className="w-4 h-4" />
                                   </Button>
@@ -1374,10 +1394,23 @@ const Admin = () => {
                                 >
                                   <Edit className="w-4 h-4" />
                                 </Button>
+                                </>
+                                )}
                               </div>
                             </div>
+                            {archiveMode && (
+                              <div className="flex flex-col gap-2 mt-3">
+                                <p className="text-xs text-muted-foreground">Історію читання збережено, інвентарні номери зарезервовано.</p>
+                                {copies.map(copy => (
+                                  <div key={copy.id} className="flex items-center gap-3 text-sm">
+                                    <span>Інв. № {copy.inventory_number ?? "—"}</span>
+                                    <Button size="sm" variant="outline" onClick={() => handleRestoreBook(copy.id)}>Відновити</Button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                             {/* On-hand copies: who holds them and until when (shown for single- and multi-copy books) */}
-                            {copies.some((c) => !c.available) && (
+                            {!archiveMode && copies.some((c) => !c.available) && (
                               <div className="flex flex-col gap-1 mt-2">
                                 {copies.filter((c) => !c.available).map((copy) => {
                                   const cr = copy.current_rental;
@@ -1401,7 +1434,7 @@ const Admin = () => {
                               </div>
                             )}
                             {/* Available copies summary (only when multiple copies) */}
-                            {copies.length > 1 && copies.some((c) => c.available) && (
+                            {!archiveMode && copies.length > 1 && copies.some((c) => c.available) && (
                               <div className="flex flex-wrap gap-1.5 mt-2">
                                 {copies.filter((c) => c.available).map((copy) => (
                                   <Badge key={copy.id} variant="outline" className="text-xs">
@@ -1729,29 +1762,29 @@ const Admin = () => {
         </Tabs>
       </div>
 
-      <AlertDialog open={!!deleteCopies} onOpenChange={(open) => { if (!open) setDeleteCopies(null); }}>
+      <AlertDialog open={!!deleteCopies} onOpenChange={(open) => { if (!open && !archiving) setDeleteCopies(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Який примірник видалити?</AlertDialogTitle>
+            <AlertDialogTitle>Архівувати примірник?</AlertDialogTitle>
             <AlertDialogDescription>
-              Оберіть примірник для видалення:
+              Оберіть примірник і підтвердьте переміщення в архів. Історія читання збережеться, інвентарний номер залишиться зарезервованим. Примірник можна відновити з архіву.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-2">
             {deleteCopies?.map((copy) => (
-              <Button
-                key={copy.id}
-                variant="outline"
-                className="w-full justify-between"
-                onClick={() => confirmDeleteCopy(copy.id)}
-              >
-                <span>Інв. {copy.inventory_number ?? "—"}</span>
+              <Button key={copy.id} variant={archiveCopyId === copy.id ? "default" : "outline"}
+                disabled={archiving} className="w-full justify-between" onClick={() => setArchiveCopyId(copy.id)}>
+                <span>Інв. № {copy.inventory_number ?? "—"}</span>
                 <Badge variant="outline" className="text-xs">вільна</Badge>
               </Button>
             ))}
           </div>
+          {archiveError && <p role="alert" className="text-sm text-destructive">{archiveError}</p>}
           <AlertDialogFooter>
-            <AlertDialogCancel>Скасувати</AlertDialogCancel>
+            <AlertDialogCancel disabled={archiving}>Скасувати</AlertDialogCancel>
+            <Button disabled={!archiveCopyId || archiving} onClick={confirmArchiveCopy}>
+              {archiving ? "Архівування..." : "Архівувати"}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1805,7 +1838,7 @@ const Admin = () => {
         open={isAddBookOpen}
         onOpenChange={(open) => { handleCloseDialog(open); if (!open) setEditingBookCopies([]); }}
         onSuccess={fetchBooks}
-        onDelete={handleDeleteBook}
+        onArchive={handleArchiveBook}
         book={editingBook}
         copies={editingBookCopies}
         initialData={importPrefill ? {
@@ -1822,7 +1855,7 @@ const Admin = () => {
         } : null}
         allInventoryNumbers={(() => {
           const m = new Map<number, string>();
-          books.forEach(b => { if (b.inventory_number != null) m.set(b.inventory_number, b.id); });
+          allBooks.forEach(b => { if (b.inventory_number != null) m.set(b.inventory_number, b.id); });
           return m;
         })()}
       />

@@ -100,7 +100,7 @@ export const authApi = {
 
 // Books API
 export const booksApi = {
-  list: () => apiFetch<Book[]>('/api/books'),
+  list: (archived?: 'all' | 'only') => apiFetch<Book[]>(`/api/books${archived ? `?archived=${archived}` : ''}`),
 
   filters: () => apiFetch<BookFilters>('/api/books/filters'),
 
@@ -134,8 +134,11 @@ export const booksApi = {
       body: JSON.stringify({ inventory_number: inventoryNumber, supplier: supplier || null }),
     }),
 
-  delete: (bookId: string) =>
-    apiFetch<void>(`/api/books/${bookId}`, { method: 'DELETE' }),
+  archive: (bookId: string, scope?: 'title') =>
+    apiFetch<void>(`/api/books/${bookId}${scope ? `?scope=${scope}` : ''}`, { method: 'DELETE' }),
+
+  restore: (bookId: string, scope?: 'title') =>
+    apiFetch<void>(`/api/books/${bookId}/restore${scope ? `?scope=${scope}` : ''}`, { method: 'POST' }),
 };
 
 // Categories API
