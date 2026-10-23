@@ -491,7 +491,6 @@ const Admin = () => {
 
   const filteredRequests = rentalRequests.filter((request) => {
     const book = bookMap.get(request.book_id);
-    if (book?.archived_at) return false;
     const linkedReader = request.reader_id ? readerMap.get(request.reader_id) : null;
     const readerNameMatch = !!linkedReader && (
       `${linkedReader.parent_name} ${linkedReader.parent_surname}`.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -803,7 +802,7 @@ const Admin = () => {
   };
 
   const handleExportBooks = () => {
-    const exportData = filteredBooks.map((b, idx) => ({
+    const exportData = books.map((b, idx) => ({
       '№': idx + 1,
       'Інв. №': b.inventory_number || '',
       'Категорія': b.category,
@@ -822,7 +821,7 @@ const Admin = () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Книги');
     XLSX.writeFile(wb, `бібліотека_книги_${new Date().toISOString().slice(0, 10)}.xlsx`);
-    toast({ title: "Експорт завершено", description: `${filteredBooks.length} книг експортовано` });
+    toast({ title: "Експорт завершено", description: `${books.length} книг експортовано` });
   };
 
   const [availabilityBook, setAvailabilityBook] = useState<Book | null>(null);

@@ -22,6 +22,13 @@ interface BookData {
   description: string | null;
 }
 
+const MAX_INVENTORY_SUGGESTIONS = 1000;
+
+const parseInventoryNumber = (value: string): number | null => {
+  const number = Number(value);
+  return /^\d+$/.test(value) && Number.isSafeInteger(number) && number > 0 ? number : null;
+};
+
 export const ImportBooksFromExcel = () => {
   const [loading, setLoading] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -66,16 +73,7 @@ export const ImportBooksFromExcel = () => {
 
         const rawInventoryNumber = row[1];
         const isMissing = rawInventoryNumber == null || (typeof rawInventoryNumber === "string" && !rawInventoryNumber.trim());
-        const inventoryNumber = isMissing
-          ? null
-          : typeof rawInventoryNumber === "number"
-            ? rawInventoryNumber
-            : typeof rawInventoryNumber === "string" && /^\d+$/.test(rawInventoryNumber.trim())
-              ? Number(rawInventoryNumber)
-              : NaN;
-        if (inventoryNumber !== null && (!Number.isSafeInteger(inventoryNumber) || inventoryNumber <= 0)) {
-          throw new Error(`Рядок ${i + 1}: інвентарний номер має бути додатним цілим числом не більшим за 9007199254740991.`);
-        }
+        const inventoryNumber = isMissing ? null : parseInventoryNumber(String(rawInventoryNumber).trim());
 
         books.push({
           inventory_number: inventoryNumber,
@@ -99,7 +97,7 @@ export const ImportBooksFromExcel = () => {
       if (books.some(book => book.inventory_number === null)) {
         const suppliedNumbers = new Set(books.flatMap(book => book.inventory_number === null ? [] : [book.inventory_number]));
         const missingCount = books.filter(book => book.inventory_number === null).length;
-        const data = await booksApi.inventorySuggestions(missingCount + suppliedNumbers.size);
+        const data = await booksApi.inventorySuggestions(Math.min(MAX_INVENTORY_SUGGESTIONS, missingCount + suppliedNumbers.size));
         if (fileSelectionRef.current !== selection) return;
         const suggestions = data.suggested_inventory_numbers.filter(number => !suppliedNumbers.has(number)
           && Number.isSafeInteger(number) && number > 0);
@@ -109,7 +107,7 @@ export const ImportBooksFromExcel = () => {
           : book);
         setBooksData(withSuggestions);
         if (withSuggestions.some(book => book.inventory_number === null)) {
-          setImportError("Отриманих підказок недостатньо для всіх порожніх номерів. Заповніть решту номерів нижче вручну.");
+          setImportError("Підказки обмежено 1000 номерами. Заповніть решту порожніх або некоректних номерів нижче вручну.");
         }
       }
     } catch (error: any) {
@@ -136,8 +134,8 @@ export const ImportBooksFromExcel = () => {
     try {
       const preparedBooks = booksData.map((book, index) => {
         const value = inventoryEdits[index] ?? String(book.inventory_number ?? "");
-        const inventoryNumber = Number(value);
-        if (!/^\d+$/.test(value) || !Number.isSafeInteger(inventoryNumber) || inventoryNumber <= 0) {
+        const inventoryNumber = parseInventoryNumber(value);
+        if (inventoryNumber === null) {
           throw new Error(`Рядок імпорту ${index + 1}: інвентарний номер має бути додатним цілим числом не більшим за 9007199254740991.`);
         }
         return { ...book, inventory_number: inventoryNumber };
@@ -170,9 +168,26 @@ export const ImportBooksFromExcel = () => {
     }
   };
 
-  const canApplySuggestions = inventoryConflict !== null
-    && inventoryConflict.suggested_inventory_numbers.length === booksData.length
-    && inventoryConflict.suggested_inventory_numbers.every(number => Number.isSafeInteger(number) && number > 0);
+  // Reconcile against the current inputs, not the rejected request: manual fixes
+  // and every valid nonconflicting sticker number must survive applying hints.
+  const currentNumbers = booksData.map((book, index) =>
+    parseInventoryNumber(inventoryEdits[index] ?? String(book.inventory_number ?? "")));
+  const numberCounts = new Map<number, number>();
+  for (const number of currentNumbers) {
+    if (number !== null) numberCounts.set(number, (numberCounts.get(number) ?? 0) + 1);
+  }
+  const reportedConflicts = new Map((inventoryConflict?.conflicts ?? [])
+    .map(conflict => [conflict.row - 1, conflict.inventory_number]));
+  const rowsToReplace = currentNumbers.flatMap((number, index) =>
+    number === null || (numberCounts.get(number) ?? 0) > 1 || reportedConflicts.get(index) === number
+      ? [index]
+      : []);
+  const reservedNumbers = new Set(currentNumbers.filter((number): number is number => number !== null));
+  const safeSuggestions = [...new Set(inventoryConflict?.suggested_inventory_numbers ?? [])]
+    .filter(number => Number.isSafeInteger(number) && number > 0 && !reservedNumbers.has(number));
+  const replacements = rowsToReplace.slice(0, safeSuggestions.length)
+    .map((row, index) => ({ row, number: safeSuggestions[index] }));
+  const canApplySuggestions = replacements.length > 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -196,7 +211,7 @@ export const ImportBooksFromExcel = () => {
       {booksData.length > 0 && (
         <div className="space-y-2">
           <p className="text-sm text-muted-foreground">
-            Порожні номери заповнюються найменшими вільними номерами за зростанням. Перевірте або змініть їх перед імпортом; номери не зарезервовано.
+            Порожні та некоректні номери заповнюються вільними номерами за зростанням (до 1000 підказок). Заповніть решту вручну; номери не зарезервовано.
           </p>
           <div className="max-h-64 space-y-2 overflow-y-auto" aria-label="Інвентарні номери для імпорту">
             {booksData.map((book, index) => (
@@ -235,9 +250,9 @@ export const ImportBooksFromExcel = () => {
           )}
           <p className="text-sm font-medium">Запропоновані заміни інвентарних номерів:</p>
           <ol className="max-h-64 overflow-y-auto space-y-1 text-sm" aria-label="Запропоновані заміни інвентарних номерів">
-            {inventoryConflict.suggested_inventory_numbers.map((number, index) => (
-              <li key={index}>
-                Рядок імпорту {index + 1}: {inventoryEdits[index] ?? booksData[index]?.inventory_number} → <strong>{number}</strong>
+            {replacements.map(({ row, number }) => (
+              <li key={row}>
+                Рядок імпорту {row + 1}: {inventoryEdits[row] ?? booksData[row]?.inventory_number ?? "—"} → <strong>{number}</strong>
               </li>
             ))}
           </ol>
@@ -246,18 +261,25 @@ export const ImportBooksFromExcel = () => {
           </p>
           <Button type="button" variant="outline" disabled={loading || !canApplySuggestions} onClick={() => {
             if (!canApplySuggestions) return;
-            setBooksData(prev => prev.map((book, index) => ({
-              ...book,
-              inventory_number: inventoryConflict.suggested_inventory_numbers[index],
-            })));
-            setInventoryEdits({});
-            setInventoryConflict(null);
-            setImportError("");
+            setInventoryEdits(prev => {
+              const next = { ...prev };
+              for (const { row, number } of replacements) {
+                next[row] = String(number);
+              }
+              return next;
+            });
+            const remaining = rowsToReplace.length - replacements.length;
+            setImportError(remaining > 0
+              ? `Підказки застосовано лише до ${replacements.length} рядків. Решту (${remaining}) виправте вручну перед повторним імпортом.`
+              : "");
           }}>
             Застосувати запропоновані номери
           </Button>
+          {canApplySuggestions && replacements.length < rowsToReplace.length && (
+            <p className="text-sm text-muted-foreground">Підказок достатньо для {replacements.length} з {rowsToReplace.length} рядків. Решту номерів заповніть вручну.</p>
+          )}
           {!canApplySuggestions && (
-            <p role="alert" className="text-sm text-destructive">Не вдалося застосувати номери в безпечному числовому діапазоні. Виправте номери у файлі та оберіть його знову.</p>
+            <p role="alert" className="text-sm text-destructive">Немає придатних підказок для поточних конфліктів. Виправте решту номерів вручну або повторіть імпорт після своїх змін.</p>
           )}
         </div>
       )}

@@ -7,6 +7,7 @@ from app.database import get_db, immediate_transaction, query_db
 books_bp = Blueprint('books', __name__, url_prefix='/api/books')
 
 SQLITE_MAX_INTEGER = (1 << 63) - 1
+MAX_INVENTORY_SUGGESTIONS = 1000
 INVENTORY_NUMBER_ERROR = (
     'Інвентарний номер має бути додатним цілим числом '
     f'від 1 до {SQLITE_MAX_INTEGER}.'
@@ -46,7 +47,7 @@ def _smallest_free_inventory_numbers(db, count):
 
 
 def _inventory_conflict(db, count=1, conflicts=None):
-    suggestions = _smallest_free_inventory_numbers(db, count)
+    suggestions = _smallest_free_inventory_numbers(db, min(count, MAX_INVENTORY_SUGGESTIONS))
     payload = {
         'error': 'Інвентарний номер вже зайнятий або повторюється у запиті. '
                  'Оберіть вільний номер і повторіть збереження.',
@@ -74,6 +75,10 @@ def get_inventory_suggestions():
             raise ValueError
     except ValueError:
         return jsonify({'error': 'Кількість має бути додатним цілим числом.'}), 400
+    if count > MAX_INVENTORY_SUGGESTIONS:
+        return jsonify({
+            'error': f'Кількість не може перевищувати {MAX_INVENTORY_SUGGESTIONS}.'
+        }), 400
 
     suggestions = _smallest_free_inventory_numbers(get_db(), count)
     return jsonify({
@@ -493,17 +498,20 @@ def duplicate_book(book_id):
 @admin_required
 def force_book_available(book_id):
     """Force a book to be available, marking any approved rentals as returned."""
-    book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
-    if not book:
-        return jsonify({'error': 'Book not found'}), 404
-
     db = get_db()
-    db.execute('UPDATE books SET available = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [book_id])
-    db.execute(
-        "UPDATE rental_requests SET status = 'returned', return_date = CURRENT_TIMESTAMP WHERE book_id = ? AND status = 'approved'",
-        [book_id]
-    )
-    db.commit()
+    with immediate_transaction(db):
+        book = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
+        if not book:
+            return jsonify({'error': 'Book not found'}), 404
+        if book['archived_at'] is not None:
+            return jsonify({'error': 'Спочатку відновіть примірник з архіву.'}), 409
+
+        db.execute('UPDATE books SET available = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [book_id])
+        db.execute(
+            "UPDATE rental_requests SET status = 'returned', return_date = CURRENT_TIMESTAMP WHERE book_id = ? AND status = 'approved'",
+            [book_id]
+        )
+        db.commit()
 
     updated = query_db('SELECT * FROM books WHERE id = ?', [book_id], one=True)
     return jsonify(_enrich_book(updated))
@@ -529,27 +537,30 @@ def get_book_media(book_id):
 @admin_required
 def add_book_media(book_id):
     """Add a media record to a book (admin only)."""
-    book = query_db('SELECT id FROM books WHERE id = ?', [book_id], one=True)
-    if not book:
-        return jsonify({'error': 'Book not found'}), 404
-
     data = request.get_json()
     if not data:
         return jsonify({'error': 'Request body is required'}), 400
 
     media_id = str(uuid.uuid4())
     db = get_db()
-    db.execute(
-        'INSERT INTO book_media (id, book_id, file_url, file_type, display_order) VALUES (?, ?, ?, ?, ?)',
-        [
-            media_id,
-            book_id,
-            data.get('file_url', ''),
-            data.get('file_type', 'image'),
-            data.get('display_order', 0)
-        ]
-    )
-    db.commit()
+    with immediate_transaction(db):
+        book = query_db('SELECT archived_at FROM books WHERE id = ?', [book_id], one=True)
+        if not book:
+            return jsonify({'error': 'Book not found'}), 404
+        if book['archived_at'] is not None:
+            return jsonify({'error': 'Спочатку відновіть примірник з архіву.'}), 409
+
+        db.execute(
+            'INSERT INTO book_media (id, book_id, file_url, file_type, display_order) VALUES (?, ?, ?, ?, ?)',
+            [
+                media_id,
+                book_id,
+                data.get('file_url', ''),
+                data.get('file_type', 'image'),
+                data.get('display_order', 0)
+            ]
+        )
+        db.commit()
 
     media = query_db('SELECT * FROM book_media WHERE id = ?', [media_id], one=True)
     return jsonify(media), 201

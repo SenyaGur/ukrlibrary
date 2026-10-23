@@ -250,7 +250,16 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
     setErrors({});
 
     try {
-      const validatedData = (book ? bookSchema : newBookSchema).parse(formData);
+      const inventoryChanged = !book || formData.inventoryNumber !== String(book.inventory_number ?? "");
+      const validatedData = (inventoryChanged ? newBookSchema : bookSchema).parse(formData);
+      for (const copy of copies) {
+        if (copy.id === book?.id) continue;
+        const value = copyInvNumbers[copy.id] ?? String(copy.inventory_number ?? "");
+        if (value !== String(copy.inventory_number ?? "")
+          && !newBookSchema.shape.inventoryNumber.safeParse(value).success) {
+          throw new Error(`Примірник «${copy.title}»: інвентарний номер має бути додатним цілим числом не більшим за 9007199254740991.`);
+        }
+      }
 
       let coverImageUrl: string | null = null;
 
@@ -281,12 +290,14 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
           cover_color: validatedData.coverColor,
           supplier: formData.supplier || null,
           isbn: formData.isbn || null,
-          inventory_number: formData.inventoryNumber ? parseInt(formData.inventoryNumber) : null,
           age: formData.age || null,
           description: formData.description || null,
           publication_year: formData.publicationYear || null,
           new_book: formData.newBook,
         };
+        if (inventoryChanged) {
+          updateData.inventory_number = Number(formData.inventoryNumber);
+        }
 
         if (coverImageUrl) {
           updateData.cover_image_url = coverImageUrl;
@@ -297,10 +308,9 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
         // Update inventory numbers and suppliers for other copies
         for (const [copyId, invStr] of Object.entries(copyInvNumbers)) {
           if (copyId === book.id) continue; // main book already updated above
-          const invNum = invStr.trim() ? parseInt(invStr) : null;
           const originalCopy = copies.find(c => c.id === copyId);
-          if (originalCopy && invNum !== originalCopy.inventory_number) {
-            await booksApi.update(copyId, { inventory_number: invNum } as any);
+          if (originalCopy && invStr !== String(originalCopy.inventory_number ?? "")) {
+            await booksApi.update(copyId, { inventory_number: Number(invStr) });
           }
         }
         for (const [copyId, supStr] of Object.entries(copySuppliers)) {
@@ -754,7 +764,8 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
                 <Label htmlFor="inventoryNumber">Інвентарний номер{!book && " *"}</Label>
                 <Input
                   id="inventoryNumber"
-                  type="number"
+                  type={book ? "text" : "number"}
+                  inputMode="numeric"
                   min={!book ? 1 : undefined}
                   max={!book ? Number.MAX_SAFE_INTEGER : undefined}
                   step={1}
@@ -789,12 +800,12 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
             const currentInvValues: { id: string; num: number }[] = [];
             for (const c of copies) {
               const val = c.id === book.id ? formData.inventoryNumber : (copyInvNumbers[c.id] ?? "");
-              if (val) currentInvValues.push({ id: c.id, num: parseInt(val as string) });
+              if (/^\d+$/.test(val)) currentInvValues.push({ id: c.id, num: Number(val) });
             }
             const isDuplicate = (copyId: string, val: string) => {
-              if (!val) return false;
-              const num = parseInt(val);
-              if (isNaN(num)) return false;
+              if (!/^\d+$/.test(val)) return false;
+              const num = Number(val);
+              if (!Number.isSafeInteger(num) || num <= 0) return false;
               // Check against other copies in this dialog
               const sameInDialog = currentInvValues.filter(v => v.num === num && v.id !== copyId);
               if (sameInDialog.length > 0) return true;
@@ -822,7 +833,8 @@ const AddBookDialog = ({ open, onOpenChange, onSuccess, onArchive, book, copies 
                     <span className="text-xs text-muted-foreground shrink-0">Інв.:</span>
                     <div className="flex flex-col">
                       <Input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
                         className={cn("h-8 w-28", dup && "border-destructive border-2 text-destructive")}
                         value={val}
                         placeholder="—"
