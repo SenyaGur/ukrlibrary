@@ -32,32 +32,35 @@ def immediate_transaction(db):
             db.rollback()
 
 
-def _add_column_if_missing(db, table, column, ddl):
-    """Check under the startup write lock so concurrent workers cannot race."""
+def _column_exists(db, table, column):
+    """Inspect migration columns without taking a write lock."""
     existing = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
-    if column not in existing:
-        db.execute(ddl)
+    return column in existing
 
 
 def init_db():
     """Initialize the database from schema.sql and create upload directories."""
     db = get_db()
+    db.execute('PRAGMA busy_timeout = 30000')
 
     schema_path = os.path.join(os.path.dirname(__file__), 'schema.sql')
     with open(schema_path, 'r') as f:
         db.executescript(f.read())
 
-    # Hold the lock across inspection and ALTER, including concurrent startups.
-    with immediate_transaction(db):
-        migrations = [
-            ('rental_requests', 'queue_position',
-             'ALTER TABLE rental_requests ADD COLUMN queue_position INTEGER DEFAULT NULL'),
-            ('readers', 'email', "ALTER TABLE readers ADD COLUMN email TEXT DEFAULT ''"),
-            ('books', 'archived_at', 'ALTER TABLE books ADD COLUMN archived_at DATETIME'),
-        ]
-        for table, column, ddl in migrations:
-            _add_column_if_missing(db, table, column, ddl)
-        db.commit()
+    migrations = [
+        ('rental_requests', 'queue_position',
+         'ALTER TABLE rental_requests ADD COLUMN queue_position INTEGER DEFAULT NULL'),
+        ('readers', 'email', "ALTER TABLE readers ADD COLUMN email TEXT DEFAULT ''"),
+        ('books', 'archived_at', 'ALTER TABLE books ADD COLUMN archived_at DATETIME'),
+    ]
+    # Already-migrated workers can boot while another connection holds a write lock.
+    if any(not _column_exists(db, table, column) for table, column, _ in migrations):
+        with immediate_transaction(db):
+            # Another worker may have migrated while this connection waited.
+            for table, column, ddl in migrations:
+                if not _column_exists(db, table, column):
+                    db.execute(ddl)
+            db.commit()
 
     # Create upload directories
     upload_folder = current_app.config['UPLOAD_FOLDER']
